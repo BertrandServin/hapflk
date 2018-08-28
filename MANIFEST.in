@@ -1,0 +1,5 @@
+include COPYING.txt
+include LICENSE.txt
+include bin/hapflk
+include bin/hapflkadapt
+recursive-include utils *

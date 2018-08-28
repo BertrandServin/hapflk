@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+import sys
+import argparse
+import datetime as dt
+import numpy as np
+from hapflk import utils, hapflk, hapflkadapt
+from hapflk import InputOutput as IO
+
+
+def main():
+    counter = utils.Stepper()
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument( '--flkdb', dest='dbfile', default=None)
+    parser.add_argument( '-o', '--prefix', dest='prefix', help='prefix for output files', default='hapflkadapt_out')
+    IO.populate_covariate_args( parser)
+
+    if len(sys.argv) < 2:
+        parser.print_help()
+        sys.exit(0)
+    myopts = parser.parse_args( sys.argv[ 1:])
+
+    counter.new('Loading FLK DB file')
+    flkmodel = hapflk.HapFLK.from_db_file( myopts.dbfile)
+    
+    counter.new('Getting covariates information')
+    covdata = IO.get_covariates_matrix( myopts.covar_file, myopts.cov, myopts.qcov, flkmodel.pops)
+    ##print( covdata)
+
+    for f in covdata['cofactors']:
+        counter.new( " Analysing cofactor %s"% f)
+        myprefix = myopts.prefix+'_'+f
+        with hapflkadapt.FLKadapt(flkmodel.kinship, covdata['DesignMatrices'][f], prefix = myprefix, ncpu=16) as flkadapt:
+            flkadapt.correct_lrt = lambda x : flkadapt.df
+            counter.write('Single SNP tests')
+            flka  = np.apply_along_axis( flkadapt.fit_loglik_optim_ML,0,flkmodel.frq)
+            bflka = np.apply_along_axis( flkadapt.bayes_factor,0,flkmodel.frq)
+            if flkmodel.kfrq is not None:
+                counter.write('Haplotype test')
+                hflka = [flkadapt.fit_loglik_clust_pz(flkmodel.kfrq[:,:,:,i]) for i in range(flkmodel.nsnp)]
+        with open( myprefix + '.tests','w') as fout:
+            print('rs','chr','pos','pzero.null','bf', 'LRT', 'pvalue', 'Zh', 'pvalueh', 'pzero','beta', file=fout)
+            for i,d in enumerate(flka):
+                rs = flkmodel.sorted_snps[i].name
+                chrom,_,pos=flkmodel.carte.position(rs)
+                print( rs, chrom, int(pos), d['H0']['pzero'], bflka[i],  d['Lbd'],  d['pvalue'], hflka[i]['Z'], hflka[i]['pvalue'], d['H1']['pzero'], *d['H1']['beta'],  file=fout)
+ 
+if __name__=='__main__':
+    main()
