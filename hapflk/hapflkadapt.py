@@ -9,9 +9,7 @@ from scipy.optimize import minimize as optim
 from scipy import interpolate
 from numpy.linalg import multi_dot
 from multiprocessing import Pool
-
-##from gwas.hapflk2 import *
-
+from tqdm import tqdm
 
 #### Base functions for parallel computations (to put into own file)
 def pscore(args):
@@ -29,12 +27,21 @@ def root_pzero_h0(args):
     res = optim(loglik_h0_qfunc, pini, args=( p, Vinv), method='SLSQP', bounds = [ (0,1) ],options = {'maxiter':20})
     if not res.success:
         ## we do it by hand
-        xx = np.linspace(np.min(p),np.max(p),100) ## pzero has to be between min(p) and max(p)
+        xx = np.linspace(np.min(p),np.max(p),100) ## pzero should be between min(p) and max(p)
         ll = [ loglik_h0_qfunc( pz, p, Vinv) for pz in xx]
-        res = xx[ np.argmin(ll) ]
-        return res
+        ill = np.argmin(ll)
+        if ill == 0:
+            xx = np.linspace(0,np.min(p),100)
+            ll =  [ loglik_h0_qfunc( pz, p, Vinv) for pz in xx]
+            ill = np.argmin(ll)
+        elif ill == 99:
+            xx = np.linspace(np.max(p),1,100)
+            ll =  [ loglik_h0_qfunc( pz, p, Vinv) for pz in xx]
+            ill = np.argmin(ll)
+        res = xx[ ill ]
+        return (res, 0)
     else:
-        return res.x[0]
+        return (res.x[0], 1)
                     
 def loglik_h1_qfunc(pzero,p,xVinv,jacobian,x,Vinv):
     '''Optimization function to minimize -logLikelihood (i.e. maximize logLikelihood) '''
@@ -50,12 +57,21 @@ def root_pzero(args):
     res = optim(loglik_h1_qfunc,pini, args=(p,xVinv,denum,x,Vinv),method='SLSQP', bounds = [ (0,1) ],options = {'maxiter':20})
     if not res.success:
         ## we do it by hand
-        xx = np.linspace(np.min(p),np.max(p),100) ## pzero has to be between min(p) and max(p)
+        xx = np.linspace(np.min(p),np.max(p),100) ## pzero should be between min(p) and max(p)
         ll = [ loglik_h1_qfunc(pz, p, xVinv,denum,x,Vinv) for pz in xx]
-        res = xx[ np.argmin(ll) ]
-        return res
+        ill = np.argmin(ll)
+        if ill == 0:
+            xx = np.linspace(0,np.min(p),100)
+            ll =  [ loglik_h1_qfunc( pz, p,xVinv,denum,x, Vinv) for pz in xx]
+            ill = np.argmin(ll)
+        elif ill == 99:
+            xx = np.linspace(np.max(p),1,100)
+            ll =  [ loglik_h1_qfunc( pz, p,xVinv,denum,x, Vinv) for pz in xx]
+            ill = np.argmin(ll)
+        res = xx[ ill ]
+        return (res, 0)
     else:
-        return res.x[0]
+        return (res.x[0], 1)
     
 def beta_h1(pzero,p,xVinv, denum):
     num = np.dot( xVinv, (p-pzero) )
@@ -92,32 +108,46 @@ def calc_loglik_h0(args):
 
 def calc_lrt(args):
     p, xVinv, denum, x, Vinv, w = args
-    ## root_pzero
-    pini = np.mean(p)
-    res = optim(loglik_h1_qfunc, pini, args=(p, xVinv, denum, x, Vinv), method='SLSQP', bounds = [ (0,1) ],options = {'maxiter':20})
-    if not res.success:
-        ## we do it by hand
-        xx = np.linspace(np.min(p),np.max(p),100) ## pzero has to be between min(p) and max(p)
-        ll = [ loglik_h1_qfunc(pz, p, xVinv,denum,x,Vinv) for pz in xx]
-        pzero = xx[ np.argmin(ll) ]
-    else:
-        pzero = res.x[0]
+    #### H1 Calculations
+    # pini = np.mean(p)
+    # res = optim(loglik_h1_qfunc, pini, args=(p, xVinv, denum, x, Vinv), method='SLSQP', bounds = [ (0,1) ],options = {'maxiter':20})
+    # if not res.success:
+    #     ## we do it by hand
+    #     xx = np.linspace(np.min(p),np.max(p),100) ## pzero has to be between min(p) and max(p)
+    #     ll = [ loglik_h1_qfunc(pz, p, xVinv,denum,x,Vinv) for pz in xx]
+    #     pzero = xx[ np.argmin(ll) ]
+    # else:
+    #     pzero = res.x[0]
     ## beta
-    beta = multi_dot( (denum, xVinv, p-pzero))
-    ## LRT 
-    ll1 = loglik_h1( pzero, beta, p, x, Vinv)
-    ll0 = loglik_h0( p, w, Vinv)
-    return { 'pzero': np.dot(w.T, p), 'lrt':ll1 - ll0}
+    pbar = np.mean(p)
+    if (pbar < 1e-3) or (pbar > 0.999):
+        pzero = pbar
+        succ1 = 1
+        beta = 0
+        ll1 = np.nan
+        pzero_null=pbar
+        ll0 = np.nan
+        succ0 = 0
+    else:
+        pzero, succ1 = root_pzero( [ p, pbar, xVinv, denum, x, Vinv ])
+        beta = multi_dot( (denum, xVinv, p-pzero))
+        ll1 = -loglik_h1_qfunc( pzero, p, xVinv, denum, x, Vinv)
+        #### H0 Calculations
+        pzero_null, succ0 = root_pzero_h0( (p, bar, Vinv))
+        ll0 = -loglik_h0_qfunc( pzero_null, p, Vinv)
+    res_h0 = { 'llik': ll0, 'pzero': pzero_null, 'pzsucc': succ0}
+    res_h1 = { 'llik': ll1, 'pzero': pzero, 'beta': beta, 'pzsucc': succ1}
+    return { 'H0': res_h0, 'H1': res_h1, 'lrt':ll1 - ll0, 'pvalue': chi2.sf( ll1-ll0, x.shape[1])}
 
 def loglik_h0_ML(p, w, Vinv):
     npop=p.shape[0]
-    pzero_hat = root_pzero_h0( (p, np.mean(p), Vinv ))
+    pzero_hat,_ = root_pzero_h0( (p, np.mean(p), Vinv ))
     ll = - npop * np.log( pzero_hat * (1 - pzero_hat))
     res = (p - pzero_hat)
     ll -= multi_dot( ( res.T, Vinv, res)) / (pzero_hat * (1 - pzero_hat) )
     return ll
 
-def calc_lrt_ML(args):
+def calc_lrt_ML_old(args):
     p, xVinv, denum, x, Vinv, w = args
     ## root_pzero
     pini = np.mean(p)
@@ -135,8 +165,7 @@ def calc_lrt_ML(args):
     ll1 = loglik_h1( pzero, beta, p, x, Vinv)
     ll0 = loglik_h0_ML( p, w, Vinv)
     return { 'pzero': np.dot(w.T, p), 'lrt':ll1 - ll0}
-    
-   
+
 
 def bayes_factor_vect(p, xx, logdet_omega, logdet_nu, logdet_V, beta_mean_fact, omega_inv, Vinv):
     npop = p.shape[0]
@@ -172,6 +201,9 @@ def bayes_factor_vect(p, xx, logdet_omega, logdet_nu, logdet_V, beta_mean_fact, 
     
 def calc_bf(args):
     p, xx, logdet_omega, logdet_nu, logdet_V, beta_mean_fact, omega_inv, Vinv = args
+    pbar = np.mean(p)
+    if (pbar < 1e-2) or (pbar > 0.99):
+        return 0
     return bayes_factor_vect(p, xx, logdet_omega, logdet_nu, logdet_V, beta_mean_fact, omega_inv, Vinv)
 
 def average_log10bf(logbf):
@@ -204,8 +236,8 @@ class FLKadapt(object):
             self.standardized = True
             self.x = ss.zscore(x, axis=0, ddof=1) #stdize_covar(x)
         else:
-            self.x = x
-            print("Covariables not standardized, proceed with care ... ")
+            self.x = x - np.mean(x, axis=0)
+            ##print("Covariables not standardized, proceed with care ... ")
         self.F = kinship
         self.diagFbar = np.mean( np.diag( self.F)) ## average distance to root
         _,self.logdet_V = np.linalg.slogdet( self.F)
@@ -262,13 +294,13 @@ class FLKadapt(object):
                 args.append((frq[isim,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
             # lrt_res += list( np.apply_along_axis( self.fit_loglik_optim, 1, frq, skip_small = False, correct = False))
             bf_res += list(  np.apply_along_axis( self.bayes_factor, 1, frq))
-        lrt_res += self.pool.map(calc_lrt_ML, args)
+        lrt_res += self.pool.map(calc_lrt, args)
         x = []
         y = []
         for v in lrt_res:
             if not np.isnan(v['lrt']):
-              x.append( v['pzero'])
-              x.append( 1-v['pzero'])
+              x.append( v['H1']['pzero'])
+              x.append( 1-v['H1']['pzero'])
               y.append( v['lrt'])
               y.append( v['lrt'])
         x = np.array(x)
@@ -328,10 +360,10 @@ class FLKadapt(object):
             res_h1={ 'pzero': np.nan, 'llik': np.nan, 'beta': np.full((self.df),np.nan)}
             lbd=np.nan
         else:
-            val_h0 = root_pzero_h0( (p, res_h0['pzero'], self.Vinv))
+            val_h0,_ = root_pzero_h0( (p, res_h0['pzero'], self.Vinv))
             res_h0['pzero'] = val_h0
             res_h0['llik'] = -loglik_h0_qfunc( val_h0, p, self.Vinv)
-            val_h1 = root_pzero( ( p, val_h0, self.xVinv,self.denum,self.x,self.Vinv))
+            val_h1,_ = root_pzero( ( p, val_h0, self.xVinv,self.denum,self.x,self.Vinv))
             res_h1 = self.loglik_h1(val_h1,p)
             res_h1.update({ 'pzero' : val_h1} )
             lbd= (res_h1['llik']-res_h0['llik'])
@@ -340,9 +372,20 @@ class FLKadapt(object):
             #     df = self.correct_lrt( res_h0['pzero'])
             #     lbd = chi2.ppf( chi2.cdf( lbd, df = df), df = self.df)
             ##print(res_h0['pzero'],val_h1.x[0],val_h1.success,val_h1.nfev,val_h1.nit,lbd)
-        return {'H0': res_h0, 'H1': res_h1 ,'Lbd': lbd, 'pvalue': chi2.sf(lbd,self.df)}
+        return {'H0': res_h0, 'H1': res_h1 ,'lrt': lbd, 'pvalue': chi2.sf(lbd,self.df)}
 
-    
+    def FLKadapt(self, frq, skip_small = True):
+        try:
+            npop, nsnp = frq.shape
+        except:
+            return self.fit_loglik_optim_ML(p, frq, skip_small)
+        args=[]
+        for isnp in range(nsnp):
+                args.append((frq[:,isnp], self.xVinv, self.denum, self.x, self.Vinv, self.w))
+        lrt_res = self.pool.map(calc_lrt, args)
+        print(len(lrt_res), lrt_res[0])
+        return lrt_res
+  
     def fit_loglik_optim(self,p,skip_small=True, correct = True):
         ''' Numerical optimization of loglikelihood'''
         res_h0 = self.loglik_h0(p)
@@ -569,6 +612,20 @@ class FLKadapt(object):
         bf = np.log10( np.sum( np.power(10, bf - vmax))) + vmax
         return bf - np.log10( len(beta_priors))
 
+    def bayesFLKadapt( self, frq, beta_priors = np.power( 10, np.linspace(-1,1,10) )):
+        npop,nsnp = frq.shape
+        P = len(beta_priors)
+        args = []
+        for ip, nu in enumerate( beta_priors):
+            self.set_beta_prior( var_prior = nu*self.diagFbar)
+            for s in tqdm(range(nsnp)):
+                args.append( (frq[:, s], self.xx, self.logdet_omega, self.logdet_nu, self.logdet_V, self.beta_mean_fact, self.omega_inv, self.Vinv))
+        logBF_t = np.array( self.pool.map( calc_bf, args))
+        logBF_t = logBF_t.reshape( P, nsnp)
+        logBF = self.pool.map( average_log10bf, logBF_t.T)
+        return logBF
+            
+        
     def bf_rank(self,val):
         assert self.pool is not None
         val = np.asarray(val)
