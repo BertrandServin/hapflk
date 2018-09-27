@@ -11,10 +11,12 @@ Multithread version
 cimport cython
 ## NUMPY import in cython
 import numpy as np
+from scipy.optimize import linear_sum_assignment
+from libc.math cimport log
 cimport numpy as np
 np.import_array()
 ##from multiprocessing import Process,Queue,JoinableQueue
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 import sys
 
 class fitInData():
@@ -43,10 +45,11 @@ class imputeInData():
         self.data=data
         
 class imputeOutData():
-    def __init__(self,pgeno,name,pZ):
+    def __init__(self,pgeno,name,pZ,path=None):
         self.name=name
         self.pgeno=pgeno
         self.pZ=pZ
+        self.path=path
 
 class modParams():
     '''
@@ -59,13 +62,16 @@ class modParams():
     -- alpha (N x K): cluster weights at each locus
     -- rho (N x 1): jump probabilities in each interval
     '''
-    def __init__(self,nLoc,nClus,rhomin=1e-6):
+    def __init__(self,nLoc,nClus,rhomin=1e-6, alpha_up = True):
         self.nLoc=nLoc
         self.nClus=nClus
         self.theta=0.98*np.random.random((nLoc,nClus))+0.01 # avoid bounds 0 and 1
         self.rho=np.ones((nLoc,1))/1000
-        self.alpha=np.random.mtrand.dirichlet(np.ones(nClus),nLoc) # make sure sum(alpha_is)=1
+        ##self.alpha=np.random.mtrand.dirichlet(np.ones(nClus),nLoc) # make sure sum(alpha_is)=1
+        self.alpha=1.0/nClus*np.ones((nLoc,nClus))
         self.rhomin=rhomin
+        self.alpha_up = alpha_up
+        self.loglike = 0
     def initUpdate(self):
         self.top=np.zeros((self.nLoc,self.nClus))
         self.bot=np.zeros((self.nLoc,self.nClus))
@@ -90,14 +96,15 @@ class modParams():
                 self.rho[i,0]=1-self.rhomin
         ## alpha
         #self.alpha=self.jmk/self.jm
-        for i in range(self.nLoc):
-            for j in range(self.nClus):
-                self.alpha[i,j]=self.jmk[i,j]/self.jm[i,0]
-                if self.alpha[i,j]>=0.999:
-                    self.alpha[i,j]=0.999
-                elif self.alpha[i,j]<0.001:
-                    self.alpha[i,j]=0.001
-            self.alpha[i,:] /= np.sum(self.alpha[i,:])
+        if self.alpha_up:
+            for i in range(self.nLoc):
+                for j in range(self.nClus):
+                    self.alpha[i,j]=self.jmk[i,j]/self.jm[i,0]
+                    if self.alpha[i,j]>=0.999:
+                        self.alpha[i,j]=0.999
+                    elif self.alpha[i,j]<0.001:
+                        self.alpha[i,j]=0.001
+                self.alpha[i,:] /= np.sum(self.alpha[i,:])
         ## theta
         self.theta=self.top/self.bot
         for i in range(self.nLoc):
@@ -107,14 +114,11 @@ class modParams():
                 elif self.theta[i,j]<0.001:
                     self.theta[i,j]=0.001
     def write(self,stream=sys.stdout):
-        print( '###theta', file = stream)
-        for k in range(self.nClus):
-            print(' '.join([str(np.round(x,3)) for x in self.theta[:,k]]), file = stream)
-        print( '###alpha', file = stream)
-        for k in range(self.nClus):
-            print( ' '.join([str(np.round(x,3)) for x in self.alpha[:,k]]), file = stream)
-        print( '###r', file = stream)
-        print( ' '.join([str(np.round(x,3)) for x in self.rho[:,0]]), file = stream)
+        print("snp", *["t"+str(i) for i in range(self.nClus)], "rho", *["a"+str(i) for i in range(self.nClus)], file=stream)
+        for i in range(self.nLoc):
+            print(i, *[np.round( self.theta[i,k], 3) for k in range(self.nClus)], np.round( self.rho[i,0], 7), *[np.round( self.alpha[i,k], 3) for k in range(self.nClus)], file=stream)
+        
+    
     
 class fastphase():
     '''
@@ -125,7 +129,7 @@ class fastphase():
     with fastphase(nloc, nproc) as fph:
          ... do stuff ...
     '''
-    def __init__(self, nLoci, nproc = 2):
+    def __init__(self, nLoci, nproc = cpu_count()):
         assert nLoci>0
         self.nLoci=nLoci
         self.haplotypes={}
@@ -172,7 +176,7 @@ class fastphase():
         except AssertionError:
             print("Wrong Genotype Size:",gen.shape[0],"is not",self.nLoci)
             raise
-    def fit(self,nClus=20,nstep=20,params=None,verbose=False,rhomin=1e-6):
+    def fit(self,nClus=20,nstep=20,params=None,verbose=False,rhomin=1e-6, alpha_up = True):
         '''
         Fit the model on observations with nCLus clusters using nstep EM iterations
         Multithread version.
@@ -186,7 +190,7 @@ class fastphase():
         if params:
             par=params
         else:
-            par=modParams(self.nLoci,nClus,rhomin)
+            par=modParams(self.nLoci,nClus,rhomin, alpha_up)
         if verbose:
             print( 'Fitting fastphase model')
             print( '# clusters ',nClus)
@@ -214,7 +218,88 @@ class fastphase():
             par.loglike=log_like
         
         return par
-        
+
+    def optimfit(self, nClus = 20, nstep = 20, params=None, verbose = False, rhomin=1e-6, alpha_up = False, nEM = 10, niter=10):
+        liktraj = []
+
+        ## Fit nEM EM to find an initial start
+        if verbose:
+            print("*** Init EM", 1)
+        nbest = 0
+        curpar = self.fit( nClus = nClus, nstep = nstep, verbose = verbose, alpha_up = alpha_up)
+        liktraj.append((0, 0, 'NA', curpar.loglike))
+        for n in range(1, nEM):
+            if verbose:
+                print("*** Init EM", n+1)
+            
+            par = self.fit( nClus = nClus, nstep = nstep,verbose = True, alpha_up = alpha_up)
+            liktraj.append((n, 0, par.loglike))
+            if par.loglike > curpar.loglike:
+                nbest = n
+                curpar = par
+        init_par = curpar
+        ## Improve it
+        imp = self.viterbi([curpar])
+        for it in range(niter):
+            if verbose:
+                print("*** Iter", it+1)
+
+            ## calculate costs
+            if verbose:
+                print("Calculating Costs")
+            ### Genotypes
+            args = []
+            for ijump in range(self.nLoci-1):
+                for geno in self.genotypes.keys():
+                    vit = imp[geno][0]
+                    args.append( (vit[ijump:ijump+2], nClus))
+            res = np.array( self.pool.map( calc_cost_matrix_geno, args))
+            cost_mat_tot = res.reshape( (self.nLoci - 1, len(self.genotypes), nClus, nClus))
+            cost_mat_geno = np.sum(cost_mat_tot, axis = 1)
+            ### haplotypes
+            args = []
+            for ijump in range(self.nLoci -1):
+                for haplo in self.haplotypes.keys():
+                    vit = imp[haplo][0]
+                    args.append( (vit[ijump:ijump+2], nClus))
+            res = np.array( self.pool.map( calc_cost_matrix_haplo, args))
+            cost_mat_tot = res.reshape( (self.nLoci - 1, len(self.haplotypes), nClus, nClus))
+            cost_mat_haplo = np.sum(cost_mat_tot, axis = 1)
+            ## combine
+            cost_mat = cost_mat_geno + cost_mat_haplo
+            if verbose:
+                print("Computing optimum permutations")
+            args = [ cost_mat[i,] for i in range( self.nLoci-1)]
+            res = np.array( self.pool.map( linear_sum_assignment, args))
+            permut = res[:,1,:]
+            newpar = switch_pars( curpar, permut)
+            if verbose:
+                print("EM with switched parameters")
+            if (it == niter-1): ## last iteration, longer and no imputation
+                par_s = self.fit( nClus = nClus, nstep=max(50,nstep), verbose=True, params=newpar, alpha_up=False)
+            else:
+                par_s = self.fit( nClus = nClus, nstep=nstep, verbose=True, params=newpar, alpha_up=False)
+                imp = self.viterbi([par_s])
+            curpar = par_s
+            liktraj.append((nbest, it+1, curpar.loglike))
+            if verbose:
+                print('***',curpar.loglike)
+        if verbose:
+            print('EM','iter','loglik')
+            for dat in liktraj:
+                print(*dat)
+        return par_s
+
+    def viterbi(self, parList):
+        tasks =  [ imputeInData('haplo',parList,self.nLoci,name,hap) for name, hap in  self.haplotypes.items()]
+        tasks += [ imputeInData('geno',parList,self.nLoci,name,gen) for name, gen in self.genotypes.items()]
+        results = self.pool.map( viterber, tasks)
+
+        Imputations={}
+        for item in results:
+            Imputations[item.name]=item.path
+        return Imputations
+
     def impute(self,parList):
         tasks =  [ imputeInData('haplo',parList,self.nLoci,name,hap) for name, hap in  self.haplotypes.items()]
         tasks += [ imputeInData('geno',parList,self.nLoci,name,gen) for name, gen in self.genotypes.items()]
@@ -222,7 +307,7 @@ class fastphase():
 
         Imputations={}
         for item in results:
-            Imputations[item.name]=(item.pgeno,item.pZ)
+            Imputations[item.name]=(item.pgeno,item.pZ,item.path)
         return Imputations
 
 
@@ -241,6 +326,26 @@ def fitter( item):
         res = fitOutData(gLogLike,top,bot,jmk,2)
     return res
 
+def viterber( item):
+    #cIter=iter
+    cdef int i,k
+    cdef int nLoc
+    cdef double x
+    cdef double nsamp=100
+    if item.type == 'haplo':
+        path = []
+        for par in item.parList:
+            pth = hapViterbi( par.alpha, par.theta, par.rho, item.data)
+            path.append(pth)
+        res = imputeOutData(item.name,path)
+    elif item.type == 'geno':
+        path = []
+        for par in item.parList:
+            pth = genViterbi( par.alpha, par.theta, par.rho, item.data)
+            path.append( pth)
+        res = imputeOutData(None,item.name,None, path)
+    return res
+
 def imputer( item):
     #cIter=iter
     cdef int i,k
@@ -250,6 +355,7 @@ def imputer( item):
     if item.type == 'haplo':
         pgeno=np.zeros(item.nLoc,dtype=np.float64)
         probZ=[]
+        path = []
         x = 1.0/len(item.parList)
         for par in item.parList:
             pZ=hapCalc(par.alpha,par.theta,par.rho,item.data,1)
@@ -257,10 +363,13 @@ def imputer( item):
                 for k in range(par.nClus):
                     pgeno[i]+=x*hap_p_all(item.data[i],pZ[i,k],par.theta[i,k])
             probZ.append(pZ)
-        res = imputeOutData(pgeno,item.name,probZ)
+            pth = hapViterbi( par.alpha, par.theta, par.rho, item.data)
+            path.append(pth)
+        res = imputeOutData(pgeno,item.name,probZ,path)
     elif item.type == 'geno':
         pgeno=np.zeros(item.nLoc,dtype=np.float64)
         probZ=[]
+        path = []
         x = 1.0/len(item.parList)
         for par in item.parList:
             pZ=genCalc(par.alpha,par.theta,par.rho,item.data,1)
@@ -270,9 +379,60 @@ def imputer( item):
                     for k2 in range(par.nClus):
                         pgeno[i]+=gen_p_geno(item.data[i],pZ[i,k1,k2],par.theta[i,k1],par.theta[i,k2])
             probZ.append(pZ)
+            pth = genViterbi( par.alpha, par.theta, par.rho, item.data)
+            path.append( pth)
         pgeno/=len(item.parList)
-        res = imputeOutData(pgeno,item.name,probZ)
+        res = imputeOutData(pgeno,item.name,probZ, path)
     return res
+
+##### Cluster switch functions
+
+def calc_cost_matrix_haplo( args):
+    vit, nK = args
+    k = vit[0]
+    kp = vit[1]
+    cost_mat = np.zeros((nK,nK))
+    cost_mat[k, kp] -= 1
+    return cost_mat
+    
+def calc_cost_matrix_geno( args):
+    vit, nK = args
+    k1, k2 = vit[0]
+    kp1, kp2 = vit[1]
+    cost_mat = np.zeros((nK,nK))
+    if (k1 == kp1):
+        if (k2 == kp2): ## k1 == kp1 & k2 == kp2 , possibly k1 == k2
+            cost_mat[k1, kp1] -= 1
+            cost_mat[k2, kp2] -= 1
+        else: ## k1 == kp1 & k2 != kp2
+            cost_mat[k1, kp1] -= 1 ## diagonal
+            cost_mat[k2, kp2] -= 1
+    elif ( k2 == kp2): ## k1 != kp1 & k2 == kp2
+        cost_mat[k1, kp1] -= 1 ## diagonal
+        cost_mat[k2, kp2] -= 1
+    elif ( k1 == kp2) and (k2 != kp1):
+        cost_mat[k1, kp2] -= 1 ## diagonal
+        cost_mat[k2, kp1] -= 1
+    elif ( k1 != kp2) and (k2 == kp1):
+        cost_mat[k1, kp2] -= 1 ## diagonal
+        cost_mat[k2, kp1] -= 1
+    else:
+        cost_mat[ k1, kp1] -= 0.5
+        cost_mat[ k1, kp2] -= 0.5
+        cost_mat[ k2, kp1] -= 0.5
+        cost_mat[ k2, kp2] -= 0.5
+    return cost_mat
+
+
+def switch_pars(par, permut):
+    newpar = modParams(par.nLoc, par.nClus, alpha_up = par.alpha_up)
+    for i in range(par.nClus):
+        newpar.theta[0,i]=par.theta[0,i]
+        curclus = i
+        for j in range(1, par.nLoc):
+            curclus =  permut[ j-1, curclus]
+            newpar.theta[ j,i] = par.theta[ j, curclus]
+    return newpar
 
 ############################### Calculations #################################
 
@@ -286,7 +446,7 @@ cdef double hap_p_all(int i, double pz, double theta):
 
 cdef double gen_p_geno(int i, double pz, double theta1, double theta2):
     cdef double rez
-    ## theta1*(1-theta2)+theta2*(1-theta1)+2*theta2*theta1 == theta1+thet2
+    ## theta1*(1-theta2)+theta2*(1-theta1)+2*theta2*theta1 == theta1+theta2
     if i<0:
         rez=pz*(theta1+theta2)
     else:
@@ -294,8 +454,53 @@ cdef double gen_p_geno(int i, double pz, double theta1, double theta2):
         #rez=pz*(theta1+theta2)
     return rez
 
-##### Genotype Calculations 
 
+cdef double myPow10(int x):
+    cdef double rez=1.0
+    cdef int i
+    if x==0:
+        return rez
+    elif x<0:
+        for i in range(-x):
+            rez*=0.1
+    else:
+        for i in range(x):
+            rez*=10
+    return rez
+
+
+cdef int argmax( np.ndarray[ np.float64_t, ndim=1] a, int size):
+    cdef int i, best_i
+    cdef double v, best_v
+
+    best_v = a[ 0 ]
+    best_i = 0
+    for i in range(1, size):
+        if a[ i ] > best_v:
+            best_i = i
+            best_v = a[ i ]
+    return best_i
+
+cdef int pair2idx( int k1, int k2, int nK):
+    cdef int k, l
+    k = min( k1, k2)
+    l = max( k1, k2)
+    return  nK * k - ( k * ( k -1))//2  + ( l - k)
+
+cdef ( int, int) idx2pair( int idx, int nK):
+    cdef int k, l, nelem, curk
+    nelem = 0
+    for curk in range(nK):
+        if ( idx - nelem) < ( nK - curk):
+            l = curk + (idx - nelem)
+            k = curk
+            break
+        else:
+            nelem += nK - curk
+    return (k, l)
+
+
+##### Genotype Calculations 
 
 cdef double genprG(double t1, double t2, int g):
     cdef double rez
@@ -317,19 +522,61 @@ cdef double probJ(int m,int s, double rho):
     elif s==2:
         return rho*rho
 
-cdef double myPow10(int x):
-    cdef double rez=1.0
-    cdef int i
-    if x==0:
-        return rez
-    elif x<0:
-        for i in range(-x):
-            rez*=0.1
-    else:
-        for i in range(x):
-            rez*=10
-    return rez
+cpdef genViterbi( aa, tt, rr, gg):
+    cdef np.ndarray[np.float64_t, ndim=2] alpha = aa
+    cdef np.ndarray[np.float64_t,ndim=2] theta = tt
+    cdef np.ndarray[np.float64_t, ndim=2] rho = rr
+    cdef np.ndarray[np.int_t, ndim=1] gen = gg
 
+    ## cython declarations
+    cdef int nLoc, nK, ikp,  prev_kp, npairs
+    cdef int k1, k2, kp1, kp2, m
+    cdef double best_v
+    
+    nLoc = alpha.shape[0]
+    nK = alpha.shape[1]
+    npairs = nK * ( nK + 1)//2
+    
+    cdef np.ndarray[ np.float64_t, ndim = 2 ] delta = np.zeros((npairs, nLoc), dtype=np.float64)
+    cdef np.ndarray[ np.int_t, ndim = 2 ] psi = np.zeros((npairs, nLoc), dtype=np.int)
+    cdef np.ndarray[ np.int_t, ndim = 1] soluce = np.zeros(nLoc, dtype= np.int)
+    cdef np.ndarray[ np.float64_t, ndim = 1] tempVal = np.zeros( npairs, dtype=np.float64)
+
+
+    ## initialization
+    for k1 in range(nK):
+        ikp = pair2idx( k1, k1, nK)
+        delta[ikp,0] = log(alpha[ 0, k1]) + log(alpha[ 0, k1]) +log( genprG( theta[ 0, k1], theta[ 0, k1], gen[0]))
+        for k2 in range( k1+1 , nK):
+            ikp = pair2idx( k1, k2, nK)
+            delta[ikp,0] = log(2) + log( alpha[ 0, k1]) + log( alpha[ 0, k2]) +log( genprG( theta[ 0, k1], theta[ 0, k2], gen[0]))
+
+    ## recursion
+    for m in range(1, nLoc):
+        for ikp in range(npairs):
+            k1, k2 = idx2pair( ikp, nK)
+            for prev_kp in range(npairs):
+                kp1, kp2 = idx2pair( prev_kp, nK)
+                if (k1 == kp1):
+                    if (k2 == kp2): ## k1 == kp1 & k2 == kp2
+                        tempVal[ prev_kp] = log(probJ(m, 0, rho[m, 0])) +  delta[prev_kp, m-1]
+                    else: ## k1 == kp1 & k2 != kp2
+                        tempVal[ prev_kp] = log(probJ(m, 1, rho[m, 0])) + log( alpha[ m, k2]) + delta[ prev_kp, m-1]
+                elif ( k2 == kp2): ## k1 != kp1 & k2 == kp2
+                    tempVal[ prev_kp] = log(probJ(m, 1, rho[m, 0])) + log( alpha[ m, k1]) +  delta[ prev_kp, m-1]
+                elif ( k1 == kp2) or (k2 == kp1): ## crossing
+                    tempVal[ prev_kp] = log(probJ(m, 1, rho[m, 0])) + log( alpha[ m, k1]) + delta[ prev_kp, m-1]
+                else: ## k1 !=kp1 & k2 != kp2
+                    tempVal[ prev_kp] = log(probJ(m, 2, rho[m, 0])) + log( alpha[ m, k1]) + alpha[m, k2] +  delta[ prev_kp, m-1]
+            psi[ ikp, m] = argmax(tempVal, npairs)
+            delta[ ikp, m] = tempVal[ psi[ ikp, m]] + log( genprG( theta[ m, k1], theta[ m, k2], gen[m]))
+
+    ## termination
+    soluce[ nLoc - 1 ] = argmax( delta[ :, nLoc-1], npairs)
+    for m in range( nLoc - 2, -1, -1):
+        soluce[ m ] = psi[ soluce[ m+1 ], m+1]
+    return [ idx2pair(ikp, nK) for ikp in soluce]
+            
 cpdef genCalc(aa,tt,rr,gg,u2p):
     cdef np.ndarray[np.float64_t, ndim=2] alpha=aa
     cdef np.ndarray[np.float64_t,ndim=2] theta=tt
@@ -387,7 +634,7 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
         if tScaleTemp<1e-20:
             tScale=20
         else:
-            tScale=int(-np.log10(tScaleTemp))
+            tScale=int(-log(tScaleTemp)/log(10))
         if tScale <=0:
             tScale=0
         betaScale[m-1]=betaScale[m]+tScale
@@ -419,7 +666,7 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
         tDoubleSum[0]+=tSumk[0,k1]
     tScale=0
     if tDoubleSum[0] != 0:
-        tScale=int(-np.log10(tDoubleSum[0]))
+        tScale=int(-log(tDoubleSum[0])/log(10))
         if tScale <0:
             tScale=0
         phiScale[0]=tScale
@@ -452,7 +699,7 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
         if tDoubleSum[m+1]<=0:
             phiScale[m+1]=phiScale[m]
         else:
-            tScale=int(-np.log10(tDoubleSum[m+1]))
+            tScale=int(-log(tDoubleSum[m+1])/log(10))
             if tScale<0:
                 tScale=0
             phiScale[m+1]=phiScale[m]+tScale
@@ -466,7 +713,7 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
                         mPhi[m+1,k1,k2]*=dummy
                         mPhi[m+1,k2,k1]*=dummy
     ## end mPhi
-    logLikelihood=np.log10(tDoubleSum[nLoc-1])-phiScale[nLoc-1]
+    logLikelihood=log(tDoubleSum[nLoc-1])/log(10)-phiScale[nLoc-1]
     ##
     ## compute Individual Contribution top,bottom,jmk
     ##
@@ -487,22 +734,29 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
         return probZ
     # calc jmk
     for k1 in range(nK):
-        jmk[0,k1]=2*alpha[0,k1]
+        ##jmk[0,k1]=2*alpha[0,k1]
+        jmk[0, k1] = probZ[0,k1,k1]
+        for k2 in range( k1+1, nK):
+            jmk[0, k1] += 2*probZ[0, k1, k2]
+            
     for m in range(1,nLoc):
-        dummy=myPow10(phiScale[m-1]+betaScale[m]-phiScale[nLoc-1])
+        dummy = myPow10(phiScale[m-1]+betaScale[m]-phiScale[nLoc-1])
         for k in range(nK):
             for k1 in range(nK):
-                temp=tSumk[m-1,k1]*probJ(m,1,rho[m,0])
-                temp+=2*probJ(m,2,rho[m,0])*tDoubleSum[m-1]*alpha[m,k1]
-                jmk[m,k]=temp*genprG(theta[m,k],theta[m,k1],gen[m])*mBeta[m,k,k1]
-            jmk[m,k]*=alpha[m,k]
-            jmk[m,k]/=tDoubleSum[nLoc-1]
-            jmk[m,k]/=dummy
+                temp = tSumk[ m-1, k1] * probJ(m,1,rho[m,0])
+                temp += 2 * probJ( m, 2, rho[m,0]) * tDoubleSum[m-1] * alpha[m,k1]
+                jmk[m,k] += temp * genprG( theta[m,k], theta[m,k1], gen[m]) * mBeta[m,k,k1]
+            jmk[m,k] *= alpha[m,k]
+            jmk[m,k] /= tDoubleSum[nLoc-1]
+            jmk[m,k] /= dummy
     # calc top,bottom
     for m in range(nLoc):
+        ## bottom
         for k in range(nK):
+            bot[m,k]+=probZ[m,k,k]
             for k1 in range(nK):
                 bot[m,k]+=probZ[m,k1,k]
+        ## top
         if gen[m]==0:
             for k in range(nK):
                 top[m,k]=0
@@ -511,11 +765,15 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
                 for k1 in range(nK):
                     t1=theta[m,k]*(1-theta[m,k1])
                     t2=t1+theta[m,k1]*(1-theta[m,k])
-                    top[m,k]+=probZ[m,k,k1]*t1/t2
+                    if (k == k1):
+                        top[m,k] += 2*probZ[m,k,k1]*t1/t2
+                    else:
+                        top[m,k] += probZ[m,k,k1]*t1/t2
         elif gen[m]==2:
             for k in range(nK):
+                top[m,k] += probZ[m,k,k]
                 for k1 in range(nK):
-                    top[m,k]+=probZ[m,k,k1]
+                    top[m,k] += probZ[m,k,k1]
         else:
             for k in range(nK):
                 top[m,k]=0
@@ -531,7 +789,47 @@ cdef double happrG(double t,int s):
         return t
     else:
         return 1
+  
+cpdef hapViterbi( aa, tt, rr, hh):
+    cdef np.ndarray[np.float64_t, ndim=2] alpha = aa
+    cdef np.ndarray[np.float64_t,ndim=2] theta = tt
+    cdef np.ndarray[np.float64_t, ndim=2] rho = rr
+    cdef np.ndarray[np.int_t, ndim=1] hap = hh
 
+    ## cython declarations
+    cdef int nLoc, nK
+    cdef int k, prev_k, best_k, m
+    cdef double best_v
+    nLoc = alpha.shape[0]
+    nK = alpha.shape[1]
+    cdef np.ndarray[ np.float64_t, ndim = 2 ] delta = np.zeros((nK, nLoc), dtype=np.float64)
+    cdef np.ndarray[ np.int_t, ndim = 2 ] psi = np.zeros((nK, nLoc), dtype=np.int)
+    cdef np.ndarray[ np.int_t, ndim = 1] soluce = np.empty(nLoc, dtype= np.int)
+    cdef np.ndarray[ np.float64_t, ndim = 1] tempVal = np.zeros( nK, dtype=np.float64)
+    
+    ## initialization
+    for k in range(nK):
+        delta[k,0] = log(alpha[ 0, k]) + log(happrG( theta[ 0, k], hap[0]))
+
+    ## recursion
+    for m in range(1, nLoc):
+        for k in range(nK):
+            for prev_k in range(nK):
+                ## jump
+                tempVal[ prev_k] = log(rho[ m, 0])+log( alpha[ m, k])
+                if k == prev_k:
+                    ## no jump
+                    tempVal[ prev_k] = log( rho[ m, 0]*alpha[ m, k] + (1 - rho[ m, 0]))
+                tempVal[ prev_k] += log( delta[prev_k, m-1])
+                psi[ k, m] = argmax(tempVal, nK)
+                delta[ k, m] = tempVal[ psi[ k, m]] +log( happrG( theta[ m, k], hap[ m]))
+    
+    ## termination
+    soluce[ nLoc - 1 ] = argmax( delta[ :, nLoc-1], nK)
+    for m in range( nLoc - 2, -1, -1):
+        soluce[ m ] = psi[ soluce[ m+1 ], m+1]
+    return soluce
+            
 cpdef hapCalc(aa,tt,rr,hh,u2p):
     cdef np.ndarray[np.float64_t, ndim=2] alpha = aa
     cdef np.ndarray[np.float64_t,ndim=2] theta = tt
@@ -575,7 +873,7 @@ cpdef hapCalc(aa,tt,rr,hh,u2p):
         #     print rho[m]
         #     print hap[m]
         #     print 'BLA'
-        tScale=int(-np.log10(tScaleTemp))
+        tScale=int(-log(tScaleTemp)/log(10))
         if tScale<0:
             tScale=0
         betaScale[m-1]=betaScale[m]+tScale
@@ -607,7 +905,7 @@ cpdef hapCalc(aa,tt,rr,hh,u2p):
         if tSum[m+1] < 0:
             phiScale[m+1]=phiScale[m]
         else:
-            tScale=int(-np.log10(tSum[m+1]))
+            tScale=int(-log(tSum[m+1])/log(10))
         if tScale < 0:
             tScale=0
         phiScale[m+1]=phiScale[m]+tScale
@@ -617,7 +915,7 @@ cpdef hapCalc(aa,tt,rr,hh,u2p):
             for k in range(nK):
                 mPhi[m+1,k]*=dummy
     ## end calc Phi
-    logLikelihood=np.log10(tSum[nLoc-1])-phiScale[nLoc-1]
+    logLikelihood=log(tSum[nLoc-1])/log(10)-phiScale[nLoc-1]
     ##
     ## compute individual contributions top,bottom,jmk
     ##
@@ -638,7 +936,8 @@ cpdef hapCalc(aa,tt,rr,hh,u2p):
     ## compute expected jum prob for each interval (appx C)
     # locus 0
     for k in range(nK):
-        jmk[0,k]=alpha[0,k]
+        ##jmk[0,k]=alpha[0,k]
+        jmk[0, k] = probZ[ 0, k]
     for m in range(1,nLoc):
         dummy=myPow10(phiScale[m-1]+betaScale[m]-phiScale[nLoc-1])
         for k in range(nK):

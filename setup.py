@@ -11,6 +11,7 @@ def read(fname):
 ext_modules=[
     Extension('hapflk.fastphase',
               sources = ["fastphase/fastphase.pyx"],
+##              libraries=['m'],
                   include_dirs=[np.get_include()]),
     Extension('hapflk._pgenlib',
                sources = ['pgenlib/_pgenlib.pyx', 'pgenlib/pgenlib_python_support.cpp', 'pgenlib/pgenlib_internal.cpp', 'pgenlib/plink2_base.cpp'],
