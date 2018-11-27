@@ -321,23 +321,28 @@ class Dataset():
             fvec=self.founders
         pop_names=[]
         frqs=[]
+        ## identify missing markers
+        wtot = np.ones( self.Data.shape[1], dtype=np.bool)
         for pname,pvec in self.populations.items():
-            pop_founders=pvec&fvec
-            if verbose:
-                # sys.stdout.write('\t %16s: %d individuals\r'%(pname,sum(pvec))
-                # sys.stdout.flush()
-                print( '\t %16s: %d individuals'%(pname,sum(pvec)))
-                sys.stdout.flush()
-            w=complete_cases(self.Data[pop_founders,])
-            try:
-                frqs.append(0.5*np.average(self.Data[pop_founders,],axis=0,weights=w))
-            except ZeroDivisionError:
-                wbar=np.sum(w,axis=0)
-                if np.min(wbar)==0:
-                    print( '\tWARNING: Found %d SNPs with no info on pop %s'%(np.sum(wbar==0),pname))
-                ff=0.5*np.ma.average(self.Data[pop_founders,],axis=0,weights=w)
-                ff[wbar==0]=np.ma.masked
-                frqs.append(ff)
+            pop_founders = pvec&fvec
+            ##w = complete_cases(self.Data[pop_founders,])
+            w = self.Data[pop_founders,] != missing
+            wbar = np.sum( w, axis = 0)
+            ##if np.min( wbar) == 0:
+            print( '\t%16s: %d individuals, %d SNPs with no info'%(pname, sum(pvec),np.sum(wbar==0)))
+            wtot &= wbar > 0
+        print( '\tFound %d SNPs with info on all pops'%(np.sum(wtot!=0)))
+        ## Compute allele frequencies
+        for pname,pvec in self.populations.items():
+            print('\t %16s'%pname)
+            pop_founders = pvec&fvec
+            w = complete_cases(self.Data[pop_founders,])
+            ff = np.zeros( self.Data.shape[1], dtype=np.float)
+            subw = w[:,wtot]
+            subdata = self.Data[pop_founders,][:,wtot]
+            ff[ wtot ] = 0.5*np.average( subdata, axis=0, weights=subw)
+            ff[ wtot==0 ] = np.ma.masked
+            frqs.append(ff)
             pop_names.append(pname)
         print()
         return {"pops":tuple(pop_names),'freqs':np.vstack(frqs)}

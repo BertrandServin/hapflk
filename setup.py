@@ -37,7 +37,7 @@ setup(
     url='https://forge-dga.jouy.inra.fr/projects/hapflk',
     packages=['hapflk'],
     ext_modules = cythonize(ext_modules),
-    scripts=["bin/hapflk", "bin/hapflkadapt"],
+    scripts=["bin/hapflk", "bin/hapflkadapt", "bin/flkpoptree"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Environment :: Console",

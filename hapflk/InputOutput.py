@@ -25,9 +25,24 @@ def plink_bfile(string):
         raise argparse.ArgumentTypeError(msg)
     return string
 
+def shapeit_file(string):
+    try:
+        open(string+'.haps')
+    except IOError:
+        msg="can't open HAPS file%s"%string+'.haps'
+        raise argparse.ArgumentTypeError(msg)
+    try:
+        open(string+'.sample')
+    except IOError:
+        msg="can't open SAMPLE file%s"%string+'.sample'
+        raise argparse.ArgumentTypeError(msg)
+    return string
+
 io_parser=argparse.ArgumentParser(add_help=False,formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 input_group=io_parser.add_argument_group('Input Files')
-input_group.add_argument('--bfile',required=True,metavar='PREFIX',help='PLINK bfile prefix (bim,fam,bed)',type=plink_bfile)
+input_type_group = input_group.add_mutually_exclusive_group(required=True)
+input_type_group.add_argument('--bfile',metavar='PREFIX',help='PLINK bfile prefix (bim,fam,bed)',type=plink_bfile)
+input_type_group.add_argument('--sfile',metavar='PREFIX',help='ShapeIT file prefix (haps,sample)',type=shapeit_file)
 
 
 defaultParams= {
@@ -88,7 +103,72 @@ def parseInput(options,params=defaultParams):
     ## read input
     if options.bfile:
         return parsePlinkBfile(options.bfile,params=params,options=options)
+    elif options.sfile:
+        return parseShapeIT(options.sfile, params=params)
+        
                
+################ SHAPEIT2 files ####################################
+def parseShapeIT(prefix, params=defaultParams):
+    ## parse sample file
+    idata=[]
+    with open(prefix+'.sample') as f:
+        for il,ligne in enumerate(f):
+            if il<2:
+                continue
+            buf=ligne.split()
+            phe=((buf[6]!=params['MissPheno']) and float(buf[6])) or None
+            idata.append([buf[0], \
+                          buf[1],  \
+                              ((buf[3]!=params['MissParent']) and buf[3]) or None, \
+                              ((buf[4]!=params['MissParent']) and buf[4]) or None, \
+                              (buf[5]!=params['MissSex'] and buf[5]) or None, \
+                              phe])
+                              
+    ## parse haps file
+    SNPs=[]
+    myMap=data.Map()
+    hdata = []
+    with open(prefix+'.haps') as f:
+        for ligne in f:
+            buf=ligne.split()
+            hdata.append( [ int(i) for i in buf[5:] ] )
+            ## create SNP
+            myS=data.SNP(buf[1])
+            myS.alleles[0]=buf[3]
+            myS.alleles[1]=buf[4]
+            ## add marker to map
+            try:
+                mychr=int(buf[0])
+            except:
+                mychr=buf[0]
+            mychr=buf[0]
+            myMap.addMarker(M=buf[1],C=mychr,posG=float(buf[2])*1e-6,posP=float(buf[2]))
+            SNPs.append(myS)
+    sdata = {'snps':SNPs, 'map':myMap}
+    ni = 2*len(idata)
+    ns = len(sdata['snps'])
+    mySnpIdx = range(ns)
+    dataset = data.Dataset(prefix,nsnp = ns, nindiv = ni)
+    ## fill in SNP data
+    for s in [sdata['snps'][i] for i in mySnpIdx]:
+        dataset.addSnp(s.name)
+        dataset.snp[s.name].initAlleles(s.alleles[0],s.alleles[1])
+    for iind,ind in enumerate(idata):
+        dataset.addIndividual(pop=ind[0],
+                              ID=ind[1]+'.1',
+                              fatherID=ind[2],
+                              motherID=ind[3],
+                              sex=ind[4],
+                              phenotype=ind[5])
+        dataset.addIndividual(pop=ind[0],
+                              ID=ind[1]+'.2',
+                              fatherID=ind[2],
+                              motherID=ind[3],
+                              sex=ind[4],
+                              phenotype=ind[5])
+        dataset.Data[2*iind  ,:]=np.array( [ 2*hdata[s][2*iind] for s in mySnpIdx], dtype=np.int)
+        dataset.Data[2*iind+1,:]=np.array( [ 2*hdata[s][2*iind+1] for s in mySnpIdx], dtype=np.int)
+    return {'dataset':dataset, 'map': sdata['map']}
 
 ################ BED / BIM / FAM files #############################
 

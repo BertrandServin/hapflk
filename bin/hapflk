@@ -5,11 +5,8 @@ from hapflk import hapflk, utils
 
  
 def main():
-
     counter = utils.Stepper()
-    
-    myopts=hapflk.HapFLK.get_opts(sys.argv)
-
+    myopts = hapflk.HapFLK.get_opts(sys.argv)
     ## Load hapFLK data
     if myopts.dbfile is None:
         counter.new('Setting up from command line')
@@ -17,11 +14,9 @@ def main():
     else:
         counter.new('Setting up from saved run in %s'%myopts.dbfile)
         myh=hapflk.HapFLK.from_db_file(myopts.dbfile)
-        
     ## Run tests
     counter.new('Running Tests')
     myh.run_tests(myopts)
-
     counter.new('Saving run in %s'%myopts.prefix+'.db')
     myh.savedb(myopts.prefix)
     counter.end()

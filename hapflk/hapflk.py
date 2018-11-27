@@ -7,6 +7,7 @@ from hapflk import InputOutput as IO
 from hapflk import popgen
 import hapflk.fastphase as myfph
 import numpy as np
+from multiprocessing import cpu_count
 
 
 class SNP(object):
@@ -122,7 +123,7 @@ class HapFLK(object):
     @staticmethod
     def populate_parser(parser):
         parser.add_argument('-p','--prefix',dest='prefix',help='prefix for output files',default='hapflk')
-        parser.add_argument('--ncpu',metavar='N',help='Use N processors when possible',default=1,type=int)
+        parser.add_argument('--ncpu',metavar='N',help='Use N processors when possible',default=cpu_count(),type=int)
         parser.add_argument('--eigen',help='Perform eigen decomposition of tests',default=False,action='store_true')
         parser.add_argument('--reynolds',help='Force writing down Reynolds distances',default=False,action='store_true')
         parser.add_argument('--future',help=argparse.SUPPRESS,default=False,action="store_true") ## for testing future release
@@ -137,11 +138,12 @@ class HapFLK(object):
         flk_opts.add_argument('--covkin',default=False,help='Use covariance matrix as kinship', action='store_true')
         LD_opts=parser.add_argument_group('hapFLK and LD model','Switch on hapFLK calculations and set parameters of the LD model ')
         LD_opts.add_argument('-K',help='Set the number of clusters to K. hapFLK calculations switched off if K<0',default=-1,type=int)
-        LD_opts.add_argument('--nfit',help='Set the number of model fit to use',type=int,default=20)
+        LD_opts.add_argument('--nfit',help='Set the number of model fit to use',type=int,default=10)
         LD_opts.add_argument('--phased','--inbred',help='Haplotype data provided',dest='inbred',action="store_true",default=False)
         LD_opts.add_argument('--fastLD',help=argparse.SUPPRESS,default=False,action='store_true') ## Fit LD model on "haploidized" individuals
         LD_opts.add_argument('--kfrq',dest='kfrq',help='Write Cluster frequencies (Big files)',action="store_true",default=False)
         LD_opts.add_argument('--write-params',dest='wparams',help=argparse.SUPPRESS,default=False,action='store_true')
+        LD_opts.add_argument('--legacy', dest='legacy',help='Use Legacy fastPHASE', default=False, action='store_true')
         parser.add_argument('--annot',help='Shortcut for --eigen --reynolds --kfrq',default=False,action='store_true')
         parser.add_argument('--tree',help=argparse.SUPPRESS,default=False,action='store_true')
 
@@ -159,6 +161,8 @@ class HapFLK(object):
             opts.reynolds=True
             opts.kfrq=True
             opts.eigen=True
+        if opts.sfile:
+            opts.inbred=True
         return opts
     
     def read_input(self,opts):
@@ -177,6 +181,7 @@ class HapFLK(object):
         self.sorted_snps=[]
         for sname in self.carte.sort_loci(data.snp.keys()):
             self.sorted_snps.append(SNP(sname,data.snp[sname].alleles[0],data.snp[sname].alleles[1]))
+            
         return data
     
     def model_setup(self,data,opts):
@@ -256,28 +261,45 @@ class HapFLK(object):
     def run_fastphase(self,data,opts):
         '''Estimates Scheet and Stephens LD model on data'''
         fphpars=[]
-        with myfph.fastphase(self.nsnp, opts.ncpu) as fastphase_model:
-            tohap=np.vectorize(lambda x: (x==1) and -1 or (x/2))
+        with myfph.fastphase(self.nsnp, opts.ncpu, prfx = opts.prefix+'.fphlog') as fastphase_model:
+            tohap=np.vectorize(lambda x: (x==1) and -1 or (x//2))
             sorted_snps_idx=np.array([data.snpIdx[s.name] for s in self.sorted_snps])
             for name,i in data.indivIdx.items():
                 if data.indiv[name].pop==self.outgroup:
                     continue
-                if opts.inbred or opts.fastLD:
+                if opts.inbred:
                     haplo=np.array(tohap(np.array(data.Data[i,sorted_snps_idx],dtype=int)),dtype=np.int)
                     fastphase_model.addHaplotype(name,haplo)
                 else:
                     fastphase_model.addGenotype(name,np.array(data.Data[i,sorted_snps_idx],dtype=int))
-            for e in range(opts.nfit):
-                sys.stderr.write('\tEM %d / %d \r'%(e+1,opts.nfit))
-                sys.stderr.flush()
-                if opts.debug:
-                    print()
-                par=fastphase_model.fit(nClus=opts.K,verbose=opts.debug)
+            if opts.legacy:
+                for e in range(opts.nfit):
+                    sys.stderr.write('\tEM %d / %d \r'%(e+1,opts.nfit))
+                    sys.stderr.flush()
+                    if opts.debug:
+                        print()
+                    par=fastphase_model.fit(nClus=opts.K,verbose=opts.debug, fast=opts.fastLD)
+                    fphpars.append(par)
+                    if opts.wparams:
+                        fout=open(opts.prefix+'fph_par_'+str(e),'w')
+                        par.write(fout)
+                        fout.close()
+            else:
+                par = fastphase_model.optimfit(nClus=opts.K,verbose=opts.debug,nEM=opts.nfit, fast=opts.fastLD)
+                # with open(opts.prefix+'debug_alpha_const.txt','w') as fpar:
+                #     par.write(stream=fpar)
+                ## update alpha
+                # print('Finalizing: Updating Cluster Weights')
+                # par.alpha_up = True
+                # par = fastphase_model.fit(params=par,nClus=opts.K,verbose=opts.debug,nstep=50)
+                # with open(opts.prefix+'debug_alpha_free.txt','w') as fpar:
+                #     par.write(stream=fpar)
+                opts.nfit = 1
                 fphpars.append(par)
                 if opts.wparams:
-                    fout=open(opts.prefix+'fph_par_'+str(e),'w')
-                    par.write(fout)
-                    fout.close()
+                        fout=open(opts.prefix+'fph_par','w')
+                        par.write(fout)
+                        fout.close()
             print()
         return fphpars
         
@@ -384,10 +406,10 @@ class HapFLK(object):
         ''' Write hapFLK results to 'prefix'.hapflk'''
         assert(self.flk is not None)
         with open(prefix+'.hapflk','w') as fout:
-            print('rs','chr','pos','hapflk',file=fout)
+            print('rs','chr','pos','hapflk','K',file=fout)
             for sidx,s in enumerate(self.sorted_snps):
                 spos=self.carte.position(s.name)
-                tw=[s.name,spos[0],int(spos[2]),self.hapflk[sidx]]
+                tw=[s.name,spos[0],int(spos[2]),self.hapflk[sidx],self.kfrq.shape[1]]
                 print(*tw,file=fout)
 
     

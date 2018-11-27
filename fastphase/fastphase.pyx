@@ -15,9 +15,11 @@ from scipy.optimize import linear_sum_assignment
 from libc.math cimport log
 cimport numpy as np
 np.import_array()
-##from multiprocessing import Process,Queue,JoinableQueue
 from multiprocessing import Pool, cpu_count
 import sys
+from functools import reduce
+from operator import add
+
 
 class fitInData():
     def __init__(self,type,alpha,theta,rho,data,u2z):
@@ -62,7 +64,7 @@ class modParams():
     -- alpha (N x K): cluster weights at each locus
     -- rho (N x 1): jump probabilities in each interval
     '''
-    def __init__(self,nLoc,nClus,rhomin=1e-6, alpha_up = True):
+    def __init__(self,nLoc,nClus,rhomin=1e-6, alpha_up = True, theta_up = True):
         self.nLoc=nLoc
         self.nClus=nClus
         self.theta=0.98*np.random.random((nLoc,nClus))+0.01 # avoid bounds 0 and 1
@@ -71,6 +73,7 @@ class modParams():
         self.alpha=1.0/nClus*np.ones((nLoc,nClus))
         self.rhomin=rhomin
         self.alpha_up = alpha_up
+        self.theta_up = theta_up
         self.loglike = 0
     def initUpdate(self):
         self.top=np.zeros((self.nLoc,self.nClus))
@@ -106,19 +109,20 @@ class modParams():
                         self.alpha[i,j]=0.001
                 self.alpha[i,:] /= np.sum(self.alpha[i,:])
         ## theta
-        self.theta=self.top/self.bot
-        for i in range(self.nLoc):
-            for j in range(self.nClus):
-                if self.theta[i,j]>0.999:
-                    self.theta[i,j]=0.999
-                elif self.theta[i,j]<0.001:
-                    self.theta[i,j]=0.001
+        if self.theta_up:
+            self.theta=self.top/self.bot
+            for i in range(self.nLoc):
+                for j in range(self.nClus):
+                    if self.theta[i,j]>0.999:
+                        self.theta[i,j]=0.999
+                    elif self.theta[i,j]<0.001:
+                        self.theta[i,j]=0.001
     def write(self,stream=sys.stdout):
         print("snp", *["t"+str(i) for i in range(self.nClus)], "rho", *["a"+str(i) for i in range(self.nClus)], file=stream)
         for i in range(self.nLoc):
             print(i, *[np.round( self.theta[i,k], 3) for k in range(self.nClus)], np.round( self.rho[i,0], 7), *[np.round( self.alpha[i,k], 3) for k in range(self.nClus)], file=stream)
-        
-    
+
+_tohap = np.vectorize(lambda x: (x==1) and -1 or (x/2))
     
 class fastphase():
     '''
@@ -129,21 +133,27 @@ class fastphase():
     with fastphase(nloc, nproc) as fph:
          ... do stuff ...
     '''
-    def __init__(self, nLoci, nproc = cpu_count()):
+    def __init__(self, nLoci, nproc = cpu_count(),prfx=None):
         assert nLoci>0
         self.nLoci=nLoci
         self.haplotypes={}
         self.genotypes={}
         self.nproc = nproc
         self.pool = None
-
+        self.prfx = prfx
+        
     def __enter__(self):
         self.pool = Pool ( self.nproc)
+        if self.prfx is None:
+            self.flog = sys.stdout
+        else:
+            self.flog = open(self.prfx, 'w')
         return self
 
     def __exit__(self,*args):
         self.pool.terminate()
-        
+        if self.prfx is not None:
+            self.flog.close()
 
     def flush(self):
         '''
@@ -176,7 +186,12 @@ class fastphase():
         except AssertionError:
             print("Wrong Genotype Size:",gen.shape[0],"is not",self.nLoci)
             raise
-    def fit(self,nClus=20,nstep=20,params=None,verbose=False,rhomin=1e-6, alpha_up = True):
+
+    @staticmethod
+    def gen2hap(gen):
+        return np.array( _tohap(np.array(gen, dtype=int)), dtype=int)
+    
+    def fit(self,nClus=20,nstep=20,params=None,verbose=False,rhomin=1e-6, alpha_up = True, theta_up = True, fast=False):
         '''
         Fit the model on observations with nCLus clusters using nstep EM iterations
         Multithread version.
@@ -189,129 +204,186 @@ class fastphase():
             
         if params:
             par=params
+            par.alpha_up = alpha_up
+            par.theta_up = theta_up
         else:
-            par=modParams(self.nLoci,nClus,rhomin, alpha_up)
+            par=modParams(self.nLoci,nClus,rhomin, alpha_up, theta_up)
         if verbose:
-            print( 'Fitting fastphase model')
-            print( '# clusters ',nClus)
-            print( '# threads ', self.nproc)
-            print( '# Loci', self.nLoci)
-            print( '# Haplotypes',len(self.haplotypes))
-            print( '# Genotypes', len(self.genotypes))
+            print( 'Fitting fastphase model',file=self.flog)
+            print( '# clusters ',nClus, file=self.flog)
+            print( '# threads ', self.nproc, file=self.flog)
+            print( '# Loci', self.nLoci, file=self.flog)
+            print( '# Haplotypes',len(self.haplotypes), file=self.flog)
+            print( '# Genotypes', len(self.genotypes), file=self.flog)
         old_log_like=1
-        
+  
         for iEM in range(nstep):
    
             log_like=0.0
             par.initUpdate()
 
             tasks =  [ fitInData( 'haplo', par.alpha,par.theta,par.rho,hap,0) for hap in  self.haplotypes.values()]
-            tasks += [ fitInData( 'geno', par.alpha,par.theta,par.rho,gen,0) for gen in  self.genotypes.values()]
+            if fast:
+                tasks += [ fitInData( 'haplo', par.alpha,par.theta,par.rho,fastphase.gen2hap(gen),0) for gen in  self.genotypes.values()]
+            else:
+                tasks += [ fitInData( 'geno', par.alpha,par.theta,par.rho,gen,0) for gen in  self.genotypes.values()]
             results = self.pool.map( fitter, tasks)
 
             for item in results:
                 par.addIndivFit(item.top,item.bot,item.jmk,item.val)
                 log_like += item.logLike
             if verbose:
-                print( iEM, log_like)
+                print( iEM, log_like, file=self.flog)
+                self.flog.flush()
             par.update()
             par.loglike=log_like
         
         return par
 
-    def optimfit(self, nClus = 20, nstep = 20, params=None, verbose = False, rhomin=1e-6, alpha_up = False, nEM = 10, niter=10):
+    def optimfit(self, nClus = 20, nstep = 10, params=None, verbose = False, rhomin=1e-6, alpha_up = False, fast=False, nEM = 10, niter=5):
         liktraj = []
 
+        print("=== OPTIMFIT RUN ===",file=self.flog)
         ## Fit nEM EM to find an initial start
         if verbose:
-            print("*** Init EM", 1)
+            print("*** Init EM", 1,file=self.flog)
         nbest = 0
-        curpar = self.fit( nClus = nClus, nstep = nstep, verbose = verbose, alpha_up = alpha_up)
-        liktraj.append((0, 0, 'NA', curpar.loglike))
+        curpar = self.fit( nClus = nClus, nstep = nstep, verbose = True, alpha_up = alpha_up, fast=fast)
+        liktraj.append((0, 0, curpar.loglike))
         for n in range(1, nEM):
             if verbose:
-                print("*** Init EM", n+1)
+                print("*** Init EM", n+1,file=self.flog)
             
-            par = self.fit( nClus = nClus, nstep = nstep,verbose = True, alpha_up = alpha_up)
+            par = self.fit( nClus = nClus, nstep = nstep,verbose = True, alpha_up = alpha_up, fast=fast)
             liktraj.append((n, 0, par.loglike))
             if par.loglike > curpar.loglike:
                 nbest = n
                 curpar = par
         init_par = curpar
         ## Improve it
+        print('Initial Viterbi',file=self.flog)
+        self.flog.flush()
         imp = self.viterbi([curpar])
+        
         for it in range(niter):
             if verbose:
-                print("*** Iter", it+1)
-
+                print("*** Iter", it+1,file=self.flog)
+                self.flog.flush()
             ## calculate costs
             if verbose:
-                print("Calculating Costs")
+                print("Calculating Costs",file=self.flog)
+                self.flog.flush()
+            ##cost_mat = np.zeros( (self.nLoci-1, nClus, nClus), dtype=np.float)
+            cost_mat = [ np.zeros( (nClus,nClus), dtype = np.float) for i in range(self.nLoci-1)]
             ### Genotypes
-            args = []
-            for ijump in range(self.nLoci-1):
-                for geno in self.genotypes.keys():
-                    vit = imp[geno][0]
-                    args.append( (vit[ijump:ijump+2], nClus))
-            res = np.array( self.pool.map( calc_cost_matrix_geno, args))
-            cost_mat_tot = res.reshape( (self.nLoci - 1, len(self.genotypes), nClus, nClus))
-            cost_mat_geno = np.sum(cost_mat_tot, axis = 1)
+            gen_dat = ( ( imp[geno][0][ijump:ijump+2], nClus) for geno in self.genotypes.keys() for ijump in range(self.nLoci-1)  )
+            for geno in self.genotypes.keys():
+                vit = imp[geno][0]
+                args = [(vit[ijump:ijump+2], nClus) for ijump in range(self.nLoci -1)]
+                ## res is [ np.array(nK,nK) , ... ,np.array(nK,nK)]
+                res = self.pool.map( calc_cost_matrix_geno, args, 100)
+                ## " cost_mat += res "
+                cost_mat = list( map( add, cost_mat, res))
             ### haplotypes
-            args = []
-            for ijump in range(self.nLoci -1):
-                for haplo in self.haplotypes.keys():
-                    vit = imp[haplo][0]
-                    args.append( (vit[ijump:ijump+2], nClus))
-            res = np.array( self.pool.map( calc_cost_matrix_haplo, args))
-            cost_mat_tot = res.reshape( (self.nLoci - 1, len(self.haplotypes), nClus, nClus))
-            cost_mat_haplo = np.sum(cost_mat_tot, axis = 1)
+            for haplo in self.haplotypes.keys():
+                vit = imp[haplo][0]
+                args = [(vit[ijump:ijump+2], nClus) for ijump in range(self.nLoci -1)]
+                ## res is [ np.array(nK,nK) , ... ,np.array(nK,nK)]
+                res = self.pool.map( calc_cost_matrix_haplo, args, 100)
+                ## " cost_mat += res "
+                cost_mat = list( map( add, cost_mat, res))
+                ##cost_mat += self.pool.map( calc_cost_matrix_haplo, args, 100)
             ## combine
-            cost_mat = cost_mat_geno + cost_mat_haplo
             if verbose:
-                print("Computing optimum permutations")
-            args = [ cost_mat[i,] for i in range( self.nLoci-1)]
-            res = np.array( self.pool.map( linear_sum_assignment, args))
+                print("Computing optimum permutations",file=self.flog)
+                self.flog.flush()
+            ##cost_mat = cost_mat.reshape( ( self.nLoci-1, nClus, nClus))
+            ##args = [ cost_mat[i] for i in range( self.nLoci-1)]
+            res = np.array( self.pool.map( linear_sum_assignment, cost_mat,  100))
             permut = res[:,1,:]
             newpar = switch_pars( curpar, permut)
             if verbose:
-                print("EM with switched parameters")
+                print("EM with switched parameters",file=self.flog)
+                self.flog.flush()
             if (it == niter-1): ## last iteration, longer and no imputation
-                par_s = self.fit( nClus = nClus, nstep=max(50,nstep), verbose=True, params=newpar, alpha_up=False)
+                par_s = self.fit( nClus = nClus, nstep=max(30,nstep), verbose=True, params=newpar, alpha_up=False, fast=fast)
             else:
-                par_s = self.fit( nClus = nClus, nstep=nstep, verbose=True, params=newpar, alpha_up=False)
+                par_s = self.fit( nClus = nClus, nstep=nstep, verbose=True, params=newpar, alpha_up=False, fast=fast)
                 imp = self.viterbi([par_s])
             curpar = par_s
             liktraj.append((nbest, it+1, curpar.loglike))
-            if verbose:
-                print('***',curpar.loglike)
-        if verbose:
-            print('EM','iter','loglik')
-            for dat in liktraj:
-                print(*dat)
+        
+        ## add alpha update
+        # par_s = self.fit(nClus = nClus, nstep = max(30,nstep), verbose = True, params = par_s, alpha_up = True, theta_up = False, fast = fast)
+        # liktraj.append((nbest, it+2, par_s.loglike))
+        print('EM','iter','loglik',file=self.flog)
+        for dat in liktraj:
+            print(*dat,file=self.flog)
         return par_s
 
     def viterbi(self, parList):
         tasks =  [ imputeInData('haplo',parList,self.nLoci,name,hap) for name, hap in  self.haplotypes.items()]
         tasks += [ imputeInData('geno',parList,self.nLoci,name,gen) for name, gen in self.genotypes.items()]
         results = self.pool.map( viterber, tasks)
-
         Imputations={}
         for item in results:
             Imputations[item.name]=item.path
         return Imputations
 
+    
+        # results=[]
+        # nblocks = len(tasks)//self.nproc
+        # reste = len(tasks)%self.nproc
+        # for ib in range(nblocks-1):
+        #     results += self.pool.map( viterber, tasks[ib*nproc:(ib+1)*nproc])
+
+        # Imputations={}
+        # for item in results:
+        #     Imputations[item.name]=item.path
+
+        # ## Memory efficient approach, only create nproc tasks at a time
+        # ib = 0
+        # tasks = []
+        # results = []
+
+        # ##### Haplotyps
+        # for name, hap in self.haplotypes.items():
+        #     tasks.append(imputeInData('haplo',parList,self.nLoci,name,hap))
+        #     ib += 1
+        #     if ib == self.nproc:
+        #         results += self.pool.map( viterber, tasks)
+        #         ib = 0
+        #         tasks = []
+        # ## finish the job
+        # if len(tasks) >0:
+        #     results += self.pool.map( viterber, tasks)
+        #     ib = 0
+        #     tasks=[]
+        # ##### Genotypes
+        # for name, gen in self.genotypes.items():
+        #     ib += 1
+        #     tasks.append(imputeInData('geno',parList,self.nLoci,name,gen))
+        #     if ib == self.nproc:
+        #         results += self.pool.map( viterber, tasks)
+        #         ib = 0
+        #         tasks = []
+        # ## finish the job
+        # if len(tasks) >0:
+        #     results += self.pool.map( viterber, tasks)
+        #     ib = 0
+        #     tasks=[]
+    
     def impute(self,parList):
         tasks =  [ imputeInData('haplo',parList,self.nLoci,name,hap) for name, hap in  self.haplotypes.items()]
         tasks += [ imputeInData('geno',parList,self.nLoci,name,gen) for name, gen in self.genotypes.items()]
         results = self.pool.map( imputer, tasks)
-
         Imputations={}
         for item in results:
             Imputations[item.name]=(item.pgeno,item.pZ,item.path)
         return Imputations
 
 
-### Parallel functions
+
 def fitter( item):
     #type,alpha,theta,rho,data = item
     if item.type == 'haplo' :
@@ -337,7 +409,7 @@ def viterber( item):
         for par in item.parList:
             pth = hapViterbi( par.alpha, par.theta, par.rho, item.data)
             path.append(pth)
-        res = imputeOutData(item.name,path)
+        res = imputeOutData(None,item.name,None,path)
     elif item.type == 'geno':
         path = []
         for par in item.parList:
@@ -363,7 +435,7 @@ def imputer( item):
                 for k in range(par.nClus):
                     pgeno[i]+=x*hap_p_all(item.data[i],pZ[i,k],par.theta[i,k])
             probZ.append(pZ)
-            pth = hapViterbi( par.alpha, par.theta, par.rho, item.data)
+            pth = None#hapViterbi( par.alpha, par.theta, par.rho, item.data)
             path.append(pth)
         res = imputeOutData(pgeno,item.name,probZ,path)
     elif item.type == 'geno':
@@ -379,13 +451,22 @@ def imputer( item):
                     for k2 in range(par.nClus):
                         pgeno[i]+=gen_p_geno(item.data[i],pZ[i,k1,k2],par.theta[i,k1],par.theta[i,k2])
             probZ.append(pZ)
-            pth = genViterbi( par.alpha, par.theta, par.rho, item.data)
+            pth = None#genViterbi( par.alpha, par.theta, par.rho, item.data)
             path.append( pth)
         pgeno/=len(item.parList)
         res = imputeOutData(pgeno,item.name,probZ, path)
     return res
 
 ##### Cluster switch functions
+
+cpdef np.ndarray[np.float64_t, ndim=3] calc_cost_matrix_haplo_tot( np.ndarray[np.int32_t, ndim=1] h, int nK ):
+    cdef int l,nL
+    nL= h.shape[0]
+    cdef np.ndarray[np.float64_t, ndim=3] res = np.zeros( ( nL-1, nK, nK), dtype=np.float64)
+    
+    for l in range(nL -1):
+        res[l, h[l], h[l+1]] -= 1
+    return res
 
 def calc_cost_matrix_haplo( args):
     vit, nK = args
@@ -394,7 +475,37 @@ def calc_cost_matrix_haplo( args):
     cost_mat = np.zeros((nK,nK))
     cost_mat[k, kp] -= 1
     return cost_mat
-    
+
+cpdef np.ndarray[np.float64_t, ndim=3] calc_cost_matrix_geno_tot( np.ndarray[np.int32_t, ndim=2] g, int nK ):
+    cdef int l,nL
+    cdef int k1, k2, kp1, kp2
+    nL= g.shape[0]
+    cdef np.ndarray[np.float64_t, ndim=3] res = np.zeros( ( nL-1, nK, nK), dtype=np.float64)
+
+    for l in range(nL -1):
+        if (k1 == kp1):
+            if (k2 == kp2): ## k1 == kp1 & k2 == kp2 , possibly k1 == k2
+                res[l, k1, kp1] -= 1
+                res[l, k2, kp2] -= 1
+            else: ## k1 == kp1 & k2 != kp2
+                res[l, k1, kp1] -= 1 ## diagonal
+                res[l, k2, kp2] -= 1
+        elif ( k2 == kp2): ## k1 != kp1 & k2 == kp2
+            res[l, k1, kp1] -= 1 ## diagonal
+            res[l, k2, kp2] -= 1
+        elif ( k1 == kp2) and (k2 != kp1):
+            res[l, k1, kp2] -= 1 ## diagonal
+            res[l, k2, kp1] -= 1
+        elif ( k1 != kp2) and (k2 == kp1):
+            res[l, k1, kp2] -= 1 ## diagonal
+            res[k2, kp1] -= 1
+        else:
+            res[l, k1, kp1] -= 0.5
+            res[l, k1, kp2] -= 0.5
+            res[l, k2, kp1] -= 0.5
+            res[l, k2, kp2] -= 0.5
+    return res
+
 def calc_cost_matrix_geno( args):
     vit, nK = args
     k1, k2 = vit[0]
@@ -591,14 +702,13 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
     cdef double dummy,t1,t2
     cdef double temp,tScaleTemp
     cdef double normC
-    cdef int nK2,nLoc,nK
+    cdef intnLoc,nK
     cdef int k,k1,k2,m
     cdef double logLikelihood
     ## end cython declarations
 
     nLoc=alpha.shape[0]
     nK=alpha.shape[1]
-    nK2=nK*(nK+1)//2
     ##
     ## compute backward probabilities
     ##
@@ -735,9 +845,9 @@ cpdef genCalc(aa,tt,rr,gg,u2p):
     # calc jmk
     for k1 in range(nK):
         ##jmk[0,k1]=2*alpha[0,k1]
-        jmk[0, k1] = probZ[0,k1,k1]
-        for k2 in range( k1+1, nK):
-            jmk[0, k1] += 2*probZ[0, k1, k2]
+        jmk[0, k1] = probZ[0,k1,k1] 
+        for k2 in range(nK):
+            jmk[0, k1] += probZ[0, k2, k1] 
             
     for m in range(1,nLoc):
         dummy = myPow10(phiScale[m-1]+betaScale[m]-phiScale[nLoc-1])
