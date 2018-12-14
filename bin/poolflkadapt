@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+import sys
+import argparse
+import random
+from multiprocessing import cpu_count
+import numpy as np
+
+sync_codes=['A','T','C','G','N','DEL']
+
+def get_random_lines(file, num_of_lines):
+    file.seek(0, 2)
+    last_char = file.tell() - 1  # skipping EOF position with -1
+    lines = []
+    for _ in range(num_of_lines):
+        position = random.randint(0, last_char)
+        lines.append(get_line(file, position))
+    return lines
+
+
+def get_line(file, position):
+    start_position = position
+    while True:
+        file.seek(position)
+        symbol = file.read(1)
+        if symbol == '\n' and file.tell() != start_position + 1:  # get line when reaches \n, and when \n was not the first match
+            return file.readline().rstrip()
+        elif position == 0:                                       # get symbol + rest of the line when reaches start of file
+            return symbol + file.readline().rstrip()
+        else:
+            position -= 1
+
+def parse_sync_line(ligne):
+    '''
+    Reads in line of sync file and returns allele frequencies predictions 
+
+    Input example: 
+    NC_010443.5 112 C  0:0:23:0:0:0    0:4:18:0:0:0    0:8:13:0:0:0  ...
+
+    Output:
+    a = numpy.array of floats
+    '''
+    
+    ## split pools
+    buf = ligne.split()
+    snp_info=buf[:3]
+    ref_allele = buf[2].upper()
+    ref_position = sync_codes.index(ref_allele)
+    nobs = 0.0
+    nrefs = 0.0
+    nrefs_pool = []
+    nobs_pool = []
+    for poolobs in buf[3:]:
+        n=[float(x) for x in poolobs.split(':')]
+        nobs_pool.append( sum(n))
+        nrefs_pool.append( n[ ref_position])
+    nobs = sum(nobs_pool)
+    nrefs = sum(nrefs_pool)
+    pbar = nrefs/nobs
+    if pbar < 0.5:
+        a_prior = 1
+        b_prior = ( 1 - pbar)/pbar
+    else:
+        a_prior = pbar/( 1 - pbar)
+        b_prior = 1
+    fpool_pref = []
+    for poolobs in zip( nrefs_pool, nobs_pool):
+        num = a_prior + poolobs[0]
+        den = num + b_prior + (poolobs[1] - poolobs[0])
+        fpool_pref.append( num / den)
+    return np.array(fpool_pref)
+
+        
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--sync', dest="filename",help='Genotype input file name (Sync format)')
+    parser.add_argument('-L',dest='kinsnps', help='Number of SNPs to estimate kinship',default=1e5,type=int)
+    try:
+        opts = parser.parse_args(sys.argv[1:])
+    except:
+        parser.print_help()
+        sys.exit(1)
+        
+    with open(opts.filename) as sync_file:
+        ligne = sync_file.readline()
+        buf=ligne.split()
+        npools = len(buf) - 3
+        print(npools,'pools in file', opts.filename)
+        rndsnp = get_random_lines(sync_file, opts.kinships)
+        for ligne in rndsnp:
+            print(ligne)
+            print( parse_sync_line( ligne))
+        print('Will use',opts.kinsnps,'SNPs for kinship')
+        
+if __name__=='__main__':
+    main()
