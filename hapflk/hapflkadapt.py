@@ -9,7 +9,6 @@ from scipy.optimize import minimize as optim
 from scipy import interpolate
 from numpy.linalg import multi_dot
 from multiprocessing import Pool
-from tqdm import tqdm
 
 #### Base functions for parallel computations (to put into own file)
 def pscore(args):
@@ -133,7 +132,7 @@ def calc_lrt(args):
         beta = multi_dot( (denum, xVinv, p-pzero))
         ll1 = -loglik_h1_qfunc( pzero, p, xVinv, denum, x, Vinv)
         #### H0 Calculations
-        pzero_null, succ0 = root_pzero_h0( (p, bar, Vinv))
+        pzero_null, succ0 = root_pzero_h0( (p, pbar, Vinv))
         ll0 = -loglik_h0_qfunc( pzero_null, p, Vinv)
     res_h0 = { 'llik': ll0, 'pzero': pzero_null, 'pzsucc': succ0}
     res_h1 = { 'llik': ll1, 'pzero': pzero, 'beta': beta, 'pzsucc': succ1}
@@ -383,7 +382,6 @@ class FLKadapt(object):
         for isnp in range(nsnp):
                 args.append((frq[:,isnp], self.xVinv, self.denum, self.x, self.Vinv, self.w))
         lrt_res = self.pool.map(calc_lrt, args)
-        print(len(lrt_res), lrt_res[0])
         return lrt_res
   
     def fit_loglik_optim(self,p,skip_small=True, correct = True):
@@ -618,7 +616,7 @@ class FLKadapt(object):
         args = []
         for ip, nu in enumerate( beta_priors):
             self.set_beta_prior( var_prior = nu*self.diagFbar)
-            for s in tqdm(range(nsnp)):
+            for s in range(nsnp):
                 args.append( (frq[:, s], self.xx, self.logdet_omega, self.logdet_nu, self.logdet_V, self.beta_mean_fact, self.omega_inv, self.Vinv))
         logBF_t = np.array( self.pool.map( calc_bf, args))
         logBF_t = logBF_t.reshape( P, nsnp)

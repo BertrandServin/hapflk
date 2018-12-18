@@ -169,7 +169,7 @@ def popKinship_new(D,popnames,outgroup=None,fprefix=None,keep_outgroup=False,hzy
         buf,rey_file_name=tempfile.mkstemp(prefix='reynolds')
         buf,fij_file_name=tempfile.mkstemp(prefix='fij',suffix='.txt')
         buf,tree_file_name=tempfile.mkstemp(prefix='tree',suffix='.txt')
-        buf,treedump_file_name(prefix='treedump',suffix='.tree')
+        buf,treedump_file_name=tempfile.mkstemp(prefix='treedump',suffix='.tree')
     else:
         rey_file_name=fprefix+'_reynolds.txt'
         fij_file_name=fprefix+'_fij.txt'
@@ -231,7 +231,8 @@ def popKinship_new(D,popnames,outgroup=None,fprefix=None,keep_outgroup=False,hzy
     with open(tree_file_name,'w') as f:
         print( tree.newick(), file = f)
     if dump_tree:
-        pickle.dump(tree,open(treedump_file_name,'w'))
+        with open(treedump_file_name,'w') as f:
+            pickle.dump(tree,f)
     kin,poplabels=tree.kinship()
     with open(fij_file_name,'w') as f:
         for i,nom in enumerate(poplabels):
