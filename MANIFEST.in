@@ -3,3 +3,6 @@ include LICENSE.txt
 include bin/hapflk
 include bin/hapflkadapt
 recursive-include utils *
+include fastphase/fastphase.pyx
+include pgenlib/_pgenlib.pyx
+include pgenlib/*.h
