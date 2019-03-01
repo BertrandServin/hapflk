@@ -122,7 +122,7 @@ def calc_lrt(args):
     if (pbar < 1e-3) or (pbar > 0.999):
         pzero = pbar
         succ1 = 1
-        beta = 0
+        beta = np.zeros(x.shape[1])
         ll1 = np.nan
         pzero_null=pbar
         ll0 = np.nan
@@ -134,9 +134,10 @@ def calc_lrt(args):
         #### H0 Calculations
         pzero_null, succ0 = root_pzero_h0( (p, pbar, Vinv))
         ll0 = -loglik_h0_qfunc( pzero_null, p, Vinv)
+    succ = ( ( succ0 == 1 ) and (succ1 ==1) and 1) or 0
     res_h0 = { 'llik': ll0, 'pzero': pzero_null, 'pzsucc': succ0}
     res_h1 = { 'llik': ll1, 'pzero': pzero, 'beta': beta, 'pzsucc': succ1}
-    return { 'H0': res_h0, 'H1': res_h1, 'lrt':ll1 - ll0, 'pvalue': chi2.sf( ll1-ll0, x.shape[1])}
+    return { 'H0': res_h0, 'H1': res_h1, 'lrt':ll1 - ll0, 'pvalue': chi2.sf( ll1-ll0, x.shape[1]),'pzsucc':succ }
 
 def loglik_h0_ML(p, w, Vinv):
     npop=p.shape[0]
@@ -490,7 +491,7 @@ class FLKadapt(object):
         for e in range(E):
             for k in range(K):
                 args.append( ( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
-        res =  self.pool.map( calc_lrt_ML, args)
+        res =  self.pool.map( calc_lrt, args)
         LRT = np.array( [ x['lrt'] for x in res])
         LRT = LRT.reshape(E,K)
         
