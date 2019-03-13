@@ -511,7 +511,7 @@ class FLKadapt(object):
             hflka_res.append({ 'Z':Ztot, 'pvalue': norm.sf(Ztot), 'Z_mat': zscores})
         return hflka_res
 
-    def fit_loglik_clust_pz(self,kfrq,parallel=True):
+    def fit_loglik_clust_pz(self,kfrq):
         '''
         Computes Likelihood Ratio Test of model:
 
@@ -529,25 +529,16 @@ class FLKadapt(object):
         assert self.pool is not None
         assert self.correct_lrt is not None
         E, K, R = kfrq.shape
-        if paralell:
-            args = []
-            for e in range(E):
-                for k in range(K):
-                    args.append( ( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
-            res =  self.pool.map( calc_lrt, args)
-            LRT = np.array( [ x['lrt'] for x in res])
-            Succ = np.array([ x['pzsucc'] for x in res])
+        args = []
+        for e in range(E):
+            for k in range(K):
+                args.append( ( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
+        res =  self.pool.map( calc_lrt, args)
+        LRT = np.array( [ x['lrt'] for x in res])
+        Succ = np.array([ x['pzsucc'] for x in res])
 
-            LRT = LRT.reshape(E,K)
-            Succ = Succ.reshape(E,K)
-        else:
-            LRT  = np.zeros( ( E , K))
-            Succ = np.zeros( ( E, K))
-            for e in range(E):
-                for k in range(K):
-                    x = calc_lrt( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w)
-                    LRT[e,k] = x['lrt'] 
-                    Succ[e,k] =  x['pzsucc']
+        LRT = LRT.reshape(E,K)
+        Succ = Succ.reshape(E,K)
             
         LRT = LRT*Succ
         
