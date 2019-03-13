@@ -328,8 +328,10 @@ class Dataset():
             ##w = complete_cases(self.Data[pop_founders,])
             w = self.Data[pop_founders,] != missing
             wbar = np.sum( w, axis = 0)
+            nmiss = np.sum(wbar==0)
             ##if np.min( wbar) == 0:
-            print( '\t%16s: %d individuals, %d SNPs with no info'%(pname, sum(pvec),np.sum(wbar==0)))
+            if nmiss >0 :
+                print( '\t%16s: %d individuals, %d SNPs with no info'%(pname, sum(pvec),nmiss))
             wtot &= wbar > 0
         print( '\tFound %d SNPs with info on all pops'%(np.sum(wtot!=0)))
         ## Compute allele frequencies
@@ -340,7 +342,10 @@ class Dataset():
             ff = np.zeros( self.Data.shape[1], dtype=np.float)
             subw = w[:,wtot]
             subdata = self.Data[pop_founders,][:,wtot]
+            ##
             ff[ wtot ] = 0.5*np.average( subdata, axis=0, weights=subw)
+            ## using mean
+            ff[ wtot ] = 0.5*np.mean(subdata*subw,axis=0)/np.mean(subw,axis=0)
             ff[ wtot==0 ] = np.ma.masked
             frqs.append(ff)
             pop_names.append(pname)

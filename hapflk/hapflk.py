@@ -112,6 +112,8 @@ class HapFLK(object):
             fphpars=obj.run_fastphase(data,opts)
             print("Computing haplotype cluster frequencies")
             obj.calc_kfrq(data,opts,fphpars)
+            if opts.kfrq:
+                obj.write_kfrq(opts.prefix)
             obj.nfit,obj.K,np,ns=obj.kfrq.shape
         else:
             obj.kfrq=None
@@ -330,6 +332,7 @@ class HapFLK(object):
                             pop_cluster_freq[ifit,:,ipop,:]+=np.transpose(probZ[0]/n_pop_indiv)
                         else:
                             pop_cluster_freq[ifit,:,ipop,:]+=np.transpose((0.5/n_pop_indiv)*(np.sum(probZ[0],axis=1)+np.sum(probZ[0],axis=2)))
+                fastphase_model.flush()
         self.kfrq=pop_cluster_freq
 
     def run_tests(self,opts):
@@ -391,7 +394,20 @@ class HapFLK(object):
                 for ip,nom in enumerate(self.pops):
                     tw.append(self.frq[ip,sidx])
                 print(*tw,file=fout)
-   
+
+    def write_kfrq(self,prefix):
+        if self.kfrq is None:
+            pass
+        nfit,nclus,npop,nsnp = self.kfrq.shape
+        for ifit in range(nfit):
+            with bz2.open(prefix+'.fit_'+str(ifit)+'.bz2','wt') as fout:
+                print('pop','locus','position','cluster','prob',file=fout)
+                for ipop in range(npop):
+                    for i,s in enumerate(self.sorted_snps):
+                        spos=self.carte.position(s.name)
+                        for ik in range(nclus):
+                            print(self.pops[ipop],s.name,int(spos[2]),ik,self.kfrq[ifit,ik,ipop,i], file=fout)
+            
     def write_flk(self,prefix):
         ''' Write FLK results to 'prefix'.flk'''
         assert(self.flk is not None)

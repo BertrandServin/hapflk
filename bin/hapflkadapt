@@ -34,6 +34,8 @@ def main():
     for f in covdata['cofactors']:
         counter.new( " Analysing cofactor %s"% f)
         myprefix = myopts.prefix+'_'+f
+        niv = covdata["factor_levels"][f]
+        beta_names = ['beta_'+x for x in niv[1:]]
         with hapflkadapt.FLKadapt(flkmodel.kinship, covdata['DesignMatrices'][f], prefix = myprefix, ncpu=myopts.ncpu, stdize=myopts.std) as flkadapt:
             flkadapt.correct_lrt = lambda x : flkadapt.df
             counter.new('Single SNP tests')
@@ -47,11 +49,11 @@ def main():
                 counter.new('hapFLKadapt')
                 hflka = [flkadapt.fit_loglik_clust_pz(flkmodel.kfrq[:,:,:,i]) for i in range(flkmodel.nsnp)]
         with open( myprefix + '.flkadapt','w') as fout:
-            print('rs','chr','pos','pzero.null', 'converge.null', 'bf',  'L0', 'L1', 'LRT', 'pvalue', 'pzero','beta', 'converge',  file=fout)
+            print('rs','chr','pos','pzero.null', 'bf',  'L0', 'L1', 'LRT', 'pvalue', 'pzero',*beta_names, 'converge',  file=fout)
             for i,d in enumerate(flka):
                 rs = flkmodel.sorted_snps[i].name
                 chrom,_,pos=flkmodel.carte.position(rs)
-                print( rs, chrom, int(pos), d['H0']['pzero'],d['H0']['pzsucc'], bflka[i],  d['H0']['llik'], d['H1']['llik'], d['lrt'],  d['pvalue'], d['H1']['pzero'], *d['H1']['beta'], d['H1']['pzsucc'], file=fout)
+                print( rs, chrom, int(pos), d['H0']['pzero'], bflka[i], d['H0']['llik'], d['H1']['llik'], d['lrt'],  d['pvalue'], d['H1']['pzero'], *d['H1']['beta'], d['pzsucc'], file=fout)
         if flkmodel.kfrq is not None:
             with open( myprefix + '.hapflkadapt','w') as fout:
                 print('rs', 'chr', 'pos', 'Zh', 'pvalueh', file=fout)

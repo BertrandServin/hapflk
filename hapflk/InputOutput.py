@@ -358,9 +358,9 @@ def populate_covariate_args(parser):
     covariate_args.add_argument('--covar',dest='covar_file',metavar='FILE',default=None,
                                 help='File with available covariates. Use --cov or --qcov to include them in the analysis')
     covariate_args.add_argument('--cov',metavar='LIST',dest='cov',default='',
-                                help='List of *quantitative* covariates to include, separated by commas')
+                                help='List of *qualitative* covariates to include, separated by commas')
     covariate_args.add_argument('--qcov',metavar='LIST',dest='qcov',default='',
-                                help='List of *qualitative*  covariates to include, separated by commas')
+                                help='List of *quantitative*  covariates to include, separated by commas')
 
 def get_covariates_raw(fichier,missing_value='NA'):
     ''' Get raw data from covariate file /fichier/
@@ -429,6 +429,7 @@ def get_covariates_matrix(filename,fact_names,qcov_names,names,stdize=True):
             q_vec.append(covariates[q][nom])
         u,aa=np.unique(q_vec,return_inverse=True)
         print( 'Cofactor "%s" with %d levels'%(q,len(u)))
+        print( 'Levels:' *u)
         levels[q]=u
         M=np.zeros((nids,len(u)),dtype=np.int)
         M[range(nids),aa]=1

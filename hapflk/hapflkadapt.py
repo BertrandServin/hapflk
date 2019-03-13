@@ -60,11 +60,11 @@ def root_pzero(args):
         ll = [ loglik_h1_qfunc(pz, p, xVinv,denum,x,Vinv) for pz in xx]
         ill = np.argmin(ll)
         if ill == 0:
-            xx = np.linspace(0,np.min(p),100)
+            xx = np.linspace(1e-4,np.min(p),100)
             ll =  [ loglik_h1_qfunc( pz, p,xVinv,denum,x, Vinv) for pz in xx]
             ill = np.argmin(ll)
         elif ill == 99:
-            xx = np.linspace(np.max(p),1,100)
+            xx = np.linspace(np.max(p),0.9999,100)
             ll =  [ loglik_h1_qfunc( pz, p,xVinv,denum,x, Vinv) for pz in xx]
             ill = np.argmin(ll)
         res = xx[ ill ]
@@ -123,10 +123,10 @@ def calc_lrt(args):
         pzero = pbar
         succ1 = 1
         beta = np.zeros(x.shape[1])
-        ll1 = np.nan
+        ll1 = 0
         pzero_null=pbar
-        ll0 = np.nan
-        succ0 = 0
+        ll0 = 0
+        succ0 = 1
     else:
         pzero, succ1 = root_pzero( [ p, pbar, xVinv, denum, x, Vinv ])
         beta = multi_dot( (denum, xVinv, p-pzero))
@@ -135,9 +135,12 @@ def calc_lrt(args):
         pzero_null, succ0 = root_pzero_h0( (p, pbar, Vinv))
         ll0 = -loglik_h0_qfunc( pzero_null, p, Vinv)
     succ = ( ( succ0 == 1 ) and (succ1 ==1) and 1) or 0
+    lrt = ll1 - ll0
+    if lrt <0 :
+        lrt = 0
     res_h0 = { 'llik': ll0, 'pzero': pzero_null, 'pzsucc': succ0}
     res_h1 = { 'llik': ll1, 'pzero': pzero, 'beta': beta, 'pzsucc': succ1}
-    return { 'H0': res_h0, 'H1': res_h1, 'lrt':ll1 - ll0, 'pvalue': chi2.sf( ll1-ll0, x.shape[1]),'pzsucc':succ }
+    return { 'H0': res_h0, 'H1': res_h1, 'lrt':lrt, 'pvalue': chi2.sf( lrt, x.shape[1]),'pzsucc':succ }
 
 def loglik_h0_ML(p, w, Vinv):
     npop=p.shape[0]
@@ -467,9 +470,49 @@ class FLKadapt(object):
         return average_log10bf( logBFe)
 
     
-           
+    def haplkadapt(self, kfrq):
+        assert self.pool is not None
+        assert self.correct_lrt is not None
+     
+        if len(kfrq.shape)==4:
+            E, K, R, L = kfrq.shape
+        else if len(kfrq.shape) == 3:
+            return self.fit_loglik_clust_pz(kfrq)
+        else:
+            raise ValueError("Bad Shape for kfrq")
+        
+        LRT  = np.zeros( ( E, K, L))
+        Succ = np.zeros( ( E, K, L))
+        args = []
+        for e in range(E):
+            for k in range(K):
+                for l in range(L):
+                    args.append( ( kfrq[e,k,:,l], self.xVinv, self.denum, self.x, self.Vinv, self.w))
+        res =  self.pool.map( calc_lrt, args)
+        
+        LRT = np.array( [ x['lrt'] for x in res])
+        Succ = np.array([ x['pzsucc'] for x in res])
+        
+        LRT = LRT.reshape(E,K,L)
+        Succ = Succ.reshape(E,K,L)
+        LRT = LRT*Succ
 
-    def fit_loglik_clust_pz(self,kfrq):
+        hflka_res = []
+        for l in range(L):
+            myLRT = LRT[:,:,l]
+            mykfrq = kfrq[:,:,:,l]
+            Pbar = np.einsum('j,klj->kl',self.w,mykfrq)
+            subset = np.array( ( Pbar > 0.05) & ( Pbar < 0.95))
+            df_pbar = self.correct_lrt(Pbar)
+            df = np.sum( df_pbar*subset , axis=1)
+            lrt = np.sum( myLRT*subset, axis=1)
+            qchisq = chi2.sf(lrt, df)
+            zscores = -norm.ppf( qchisq)
+            Ztot = np.mean(zscores)
+            hflka_res.append({ 'Z':Ztot, 'pvalue': norm.sf(Ztot), 'Z_mat': zscores})
+        return hflka_res
+
+    def fit_loglik_clust_pz(self,kfrq,parallel=True):
         '''
         Computes Likelihood Ratio Test of model:
 
@@ -487,13 +530,27 @@ class FLKadapt(object):
         assert self.pool is not None
         assert self.correct_lrt is not None
         E, K, R = kfrq.shape
-        args = []
-        for e in range(E):
-            for k in range(K):
-                args.append( ( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
-        res =  self.pool.map( calc_lrt, args)
-        LRT = np.array( [ x['lrt'] for x in res])
-        LRT = LRT.reshape(E,K)
+        if paralell:
+            args = []
+            for e in range(E):
+                for k in range(K):
+                    args.append( ( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w))
+            res =  self.pool.map( calc_lrt, args)
+            LRT = np.array( [ x['lrt'] for x in res])
+            Succ = np.array([ x['pzsucc'] for x in res])
+
+            LRT = LRT.reshape(E,K)
+            Succ = Succ.reshape(E,K)
+        else:
+            LRT  = np.zeros( ( E , K))
+            Succ = np.zeros( ( E, K))
+            for e in range(E):
+                for k in range(K)
+                    x = calc_lrt( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w)
+                    LRT[e,k] = x['lrt'] 
+                    Succ[e,k] =  x['pzsucc']
+            
+        LRT = LRT*Succ
         
         Pbar = np.einsum('j,klj->kl',self.w,kfrq)
         subset = np.array( ( Pbar > 0.05) & ( Pbar < 0.95))
