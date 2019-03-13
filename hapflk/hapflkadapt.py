@@ -476,7 +476,7 @@ class FLKadapt(object):
      
         if len(kfrq.shape)==4:
             E, K, R, L = kfrq.shape
-        else if len(kfrq.shape) == 3:
+        elif len(kfrq.shape) == 3:
             return self.fit_loglik_clust_pz(kfrq)
         else:
             raise ValueError("Bad Shape for kfrq")
