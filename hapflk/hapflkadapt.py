@@ -1,7 +1,6 @@
 from __future__ import print_function, division
 import sys
 import numpy as np
-import pandas as pd
 import scipy.stats as ss
 from scipy.stats import chi2,norm, multivariate_normal
 from scipy.stats import percentileofscore
@@ -545,7 +544,7 @@ class FLKadapt(object):
             LRT  = np.zeros( ( E , K))
             Succ = np.zeros( ( E, K))
             for e in range(E):
-                for k in range(K)
+                for k in range(K):
                     x = calc_lrt( kfrq[e,k,], self.xVinv, self.denum, self.x, self.Vinv, self.w)
                     LRT[e,k] = x['lrt'] 
                     Succ[e,k] =  x['pzsucc']
