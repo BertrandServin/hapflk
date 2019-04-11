@@ -22,10 +22,14 @@ class Node():
         self.parent=None ## parent node
     def newickize(self,parent_distance):
         ''' Create a newick representation of the node and its children'''
-        if self.parent is None:
-            tw=self.label
+        if len( self.child) == 0:
+            name = self.label
         else:
-            tw=self.label+':'+str(parent_distance)
+            name = ''
+        if self.parent is None:
+            tw=name
+        else:
+            tw=name+':'+str(parent_distance)
         if len(self.child)==0:
             return (tw)
         else:

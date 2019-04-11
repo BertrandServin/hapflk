@@ -469,7 +469,7 @@ class FLKadapt(object):
         return average_log10bf( logBFe)
 
     
-    def haplkadapt(self, kfrq):
+    def hapflkadapt(self, kfrq):
         assert self.pool is not None
         assert self.correct_lrt is not None
      

@@ -346,7 +346,8 @@ class Dataset():
             ff[ wtot ] = 0.5*np.average( subdata, axis=0, weights=subw)
             ## using mean
             ff[ wtot ] = 0.5*np.mean(subdata*subw,axis=0)/np.mean(subw,axis=0)
-            ff[ wtot==0 ] = np.ma.masked
+            subset = wtot == 0
+            ff[ subset ] = np.ma.masked
             frqs.append(ff)
             pop_names.append(pname)
         print()

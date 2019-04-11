@@ -206,7 +206,7 @@ def main():
             covkin=np.cov(myfstd,rowvar=True)
             ## Add a small term on the diagonal to ensure stable inverse
             val=np.trace(covkin)/npops
-            assert (val >)0
+            assert (val >0)
             covkin=covkin+np.diag(np.ones(npops)*0.01*val)
             with open(pfx+'_cov.txt','w') as fcov:
                 for i,pi in enumerate(mypopnames):
