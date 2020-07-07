@@ -28,7 +28,7 @@ ext_modules=[
                   
 setup(
     name='hapflk',
-    version='2.0-dev0',
+    version='2.0-dev1',
     description='haplotype-based test for differentiation in multiple populations',
     long_description=read('README'),
     license = "GPL v3",
@@ -37,6 +37,11 @@ setup(
     url='https://forge-dga.jouy.inra.fr/projects/hapflk',
     packages=['hapflk'],
     ext_modules = cythonize(ext_modules),
+    setup_requires= ['numpy','Cython'],
+    install_requires = [
+        'numpy',
+        'scipy',
+        'cython'],
     scripts=["bin/hapflk", "bin/hapflkadapt", "bin/flkpoptree", "bin/poolflkadapt", "bin/poolflkannot", "bin/flkfreq"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",

@@ -930,7 +930,7 @@ cpdef hapViterbi( aa, tt, rr, hh):
                 if k == prev_k:
                     ## no jump
                     tempVal[ prev_k] = log( rho[ m, 0]*alpha[ m, k] + (1 - rho[ m, 0]))
-                tempVal[ prev_k] += log( delta[prev_k, m-1])
+                tempVal[ prev_k] += delta[prev_k, m-1]
                 psi[ k, m] = argmax(tempVal, nK)
                 delta[ k, m] = tempVal[ psi[ k, m]] +log( happrG( theta[ m, k], hap[ m]))
     
