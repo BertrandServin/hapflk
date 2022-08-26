@@ -25,10 +25,10 @@ ext_modules=[
               include_dirs = [np.get_include()]
               )
    ]
-                  
+
 setup(
     name='hapflk',
-    version='2.0-dev1',
+    version='2.0',
     description='haplotype-based test for differentiation in multiple populations',
     long_description=read('README'),
     license = "GPL v3",
